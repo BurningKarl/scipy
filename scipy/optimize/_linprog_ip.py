@@ -126,6 +126,43 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
     return solve
 
 
+def _construct_sketching_matrix(w, n, s=3, sparse=True, rng=default_rng):
+    """
+    Randomly construct a sketching matrix of size (w, n) where w is assumed to
+    be smaller than n. If sparse is True, each column contains (approximately)
+    s nonzero entries randomly drawn from +-1/sqrt(s). Otherwise all matrix
+    entries are drawn from a normal distribution.
+
+    Parameters
+    ----------
+    w : int
+        Number of rows of the sketching matrix
+    n : int
+        Number columns of the sketching matrix
+    s : int
+        Number of nonzero entries in each row if ``sparse = True``
+    sparse : bool
+        True if the sketching matrix should be sparse.
+    rng : np.random.Generator (default = np.random.default_rng())
+        A random number generator used to construct the random matrix
+
+    Returns
+    -------
+    A random sketching matrix
+
+    """
+    if sparse:
+        data = rng.choice([-1 / np.sqrt(s), 1 / np.sqrt(s)], size=s * n)
+        row_indices = rng.choice(w, size=n * s)
+        column_indices = np.repeat(np.arange(n), s)
+        mat = sps.coo_matrix(
+            (data, (row_indices, column_indices)), shape=(w, n)
+        )
+        return mat.tocsr()
+    else:
+        return rng.normal(size=(w, n)) / np.sqrt(w)
+
+
 def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                lstsq=False, sym_pos=True, cholesky=True, pc=True, ip=False,
                permc_spec='MMD_AT_PLUS_A'):
