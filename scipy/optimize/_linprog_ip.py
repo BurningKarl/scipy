@@ -18,11 +18,12 @@ References
 """
 # Author: Matt Haberland
 
+import functools
 import numpy as np
 import scipy as sp
 import scipy.sparse as sps
 from warnings import warn
-from scipy.linalg import LinAlgError
+from scipy.linalg import LinAlgError, solve_triangular
 from .optimize import OptimizeWarning, OptimizeResult, _check_unknown_options
 from ._linprog_util import _postsolve
 has_umfpack = True
@@ -37,6 +38,8 @@ try:
     import scikits.umfpack  # test whether to use factorized
 except ImportError:
     has_umfpack = False
+
+default_rng = np.random.default_rng()
 
 
 def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
@@ -83,7 +86,15 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
     """
     try:
         if sparse:
-            if lstsq:
+            if isinstance(M, sps.linalg.LinearOperator):
+
+                def solve(r):
+                    x, info = sps.linalg.cg(M, r, tol=1e-12, atol=0)
+                    if info != 0:
+                        raise LinAlgError("CG failed!")
+                    return x
+
+            elif lstsq:
                 def solve(r, sym_pos=False):
                     return sps.linalg.lsqr(M, r)[0]
             elif cholesky:
@@ -165,7 +176,7 @@ def _construct_sketching_matrix(w, n, s=3, sparse=True, rng=default_rng):
 
 def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                lstsq=False, sym_pos=True, cholesky=True, pc=True, ip=False,
-               permc_spec='MMD_AT_PLUS_A'):
+               use_sketching=True, permc_spec='MMD_AT_PLUS_A'):
     """
     Given standard form problem defined by ``A``, ``b``, and ``c``;
     current variable estimates ``x``, ``y``, ``z``, ``tau``, and ``kappa``;
@@ -242,14 +253,48 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
     r_G = c.dot(x) - b.transpose().dot(y) + kappa
     mu = (x.dot(z) + tau * kappa) / (n_x + 1)
 
-    #  Assemble M from [4] Equation 8.31
     Dinv = x / z
 
-    if sparse:
-        M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
+    if use_sketching:
+        Dinv_half = np.sqrt(Dinv)
+
+        if sparse:
+            sketched_matrix = (
+                _construct_sketching_matrix(2 * A.shape[0], n_x, 3, sparse=True)
+                * sps.diags(Dinv_half, format="csc")
+                * A.T
+            )
+            _, R = np.linalg.qr(sketched_matrix.toarray())
+            Rinv = sps.linalg.LinearOperator(
+                R.shape[::-1],
+                matvec=functools.partial(solve_triangular, R, lower=False),
+                rmatvec=functools.partial(solve_triangular, R.T, lower=True),
+            )
+            A_op = sps.linalg.aslinearoperator(A)
+            Dinv_op = sps.linalg.aslinearoperator(sps.diags(Dinv, format="csc"))
+            M = Rinv.T * A_op * Dinv_op * A_op.T * Rinv
+        else:
+            sketched_matrix = _construct_sketching_matrix(
+                2 * A.shape[0], n_x, sparse=False
+            ) @ (Dinv_half.reshape(-1, 1) * A.T)
+
+            _, R = np.linalg.qr(sketched_matrix)
+            Rinv = np.linalg.inv(R)
+            M = Rinv.T @ A @ (Dinv.reshape(-1, 1) * A.T) @ Rinv
+
+        preconditioned_solve = _get_solver(
+            M, sparse, lstsq, sym_pos, cholesky, permc_spec
+        )
+
+        def solve(rhs):
+            return Rinv.dot(preconditioned_solve(Rinv.T.dot(rhs)))
     else:
-        M = A.dot(Dinv.reshape(-1, 1) * A.T)
-    solve = _get_solver(M, sparse, lstsq, sym_pos, cholesky, permc_spec)
+        #  Assemble M from [4] Equation 8.31
+        if sparse:
+            M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
+        else:
+            M = A.dot(Dinv.reshape(-1, 1) * A.T)
+        solve = _get_solver(M, sparse, lstsq, sym_pos, cholesky, permc_spec)
 
     # pc: "predictor-corrector" [4] Section 4.1
     # In development this option could be turned off
@@ -308,7 +353,18 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                 # Usually this doesn't happen. If it does, it happens when
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
-                if cholesky:
+                if use_sketching:
+                    use_sketching = False
+                    warn(
+                        "Solving system with option 'use_sketching':True "
+                        "failed. It is normal for this to happen "
+                        "occasionally, especially as the solution is "
+                        "approached. However, if you see this frequently, "
+                        "consider setting option 'cholesky' to False.",
+                        OptimizeWarning,
+                        stacklevel=5,
+                    )
+                elif cholesky:
                     cholesky = False
                     warn(
                         "Solving system with option 'cholesky':True "
@@ -786,7 +842,7 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
             # Solve [4] 8.6 and 8.7/8.13/8.23
             d_x, d_y, d_z, d_tau, d_kappa = _get_delta(
                 A, b, c, x, y, z, tau, kappa, gamma, eta,
-                sparse, lstsq, sym_pos, cholesky, pc, ip, permc_spec)
+                sparse, lstsq, sym_pos, cholesky, pc, ip, True, permc_spec)
 
             if ip:  # initial point
                 # [4] 4.4
