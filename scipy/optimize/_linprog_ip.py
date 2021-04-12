@@ -18,14 +18,11 @@ References
 """
 # Author: Matt Haberland
 
-import functools
 import numpy as np
-import pylops
 import scipy as sp
 import scipy.sparse as sps
-from logzero import logger
 from warnings import warn
-from scipy.linalg import LinAlgError, solve_triangular
+from scipy.linalg import LinAlgError
 from .optimize import OptimizeWarning, OptimizeResult, _check_unknown_options
 from ._linprog_util import _postsolve
 has_umfpack = True
@@ -41,12 +38,8 @@ try:
 except ImportError:
     has_umfpack = False
 
-default_rng = np.random.default_rng()
-use_linear_operators = True
-use_triangular_solve = False
 
-
-def _get_solver(M, sparse=False, iterative=False, lstsq=False, sym_pos=True,
+def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
                 cholesky=True, permc_spec='MMD_AT_PLUS_A'):
     """
     Given solver options, return a handle to the appropriate linear system
@@ -59,8 +52,6 @@ def _get_solver(M, sparse=False, iterative=False, lstsq=False, sym_pos=True,
     sparse : bool (default = False)
         True if the system to be solved is sparse. This is typically set
         True when the original ``A_ub`` and ``A_eq`` arrays are sparse.
-    iterative : bool (default = False)
-        True if the system is to be solved using an iterative method.
     lstsq : bool (default = False)
         True if the system is ill-conditioned and/or (nearly) singular and
         thus a more robust least-squares solver is desired. This is sometimes
@@ -91,26 +82,7 @@ def _get_solver(M, sparse=False, iterative=False, lstsq=False, sym_pos=True,
 
     """
     try:
-        if iterative:
-            if isinstance(M, pylops.LinearOperator):
-
-                def solve(r):
-                    x, iit, cost = pylops.optimization.solver.cg(
-                        M, r, x0=np.zeros(M.shape[1]), tol=1e-10, niter=1000
-                    )
-                    if iit == 100:
-                        logger.warn("Did not converge!")
-                    return x
-
-            else:
-
-                def solve(r):
-                    x, info = sps.linalg.cg(M, r, tol=1e-10, atol=1e-10)
-                    if info != 0:
-                        raise LinAlgError("CG failed!")
-                    return x
-
-        elif sparse:
+        if sparse:
             if lstsq:
                 def solve(r, sym_pos=False):
                     return sps.linalg.lsqr(M, r)[0]
@@ -154,46 +126,9 @@ def _get_solver(M, sparse=False, iterative=False, lstsq=False, sym_pos=True,
     return solve
 
 
-def _construct_sketching_matrix(w, n, s=3, sparse=True, rng=default_rng):
-    """
-    Randomly construct a sketching matrix of size (w, n) where w is assumed to
-    be smaller than n. If sparse is True, each column contains (approximately)
-    s nonzero entries randomly drawn from +-1/sqrt(s). Otherwise all matrix
-    entries are drawn from a normal distribution.
-
-    Parameters
-    ----------
-    w : int
-        Number of rows of the sketching matrix
-    n : int
-        Number columns of the sketching matrix
-    s : int
-        Number of nonzero entries in each row if ``sparse = True``
-    sparse : bool
-        True if the sketching matrix should be sparse.
-    rng : np.random.Generator (default = np.random.default_rng())
-        A random number generator used to construct the random matrix
-
-    Returns
-    -------
-    A random sketching matrix
-
-    """
-    if sparse:
-        data = rng.choice([-1 / np.sqrt(s), 1 / np.sqrt(s)], size=s * n)
-        row_indices = rng.choice(w, size=n * s)
-        column_indices = np.repeat(np.arange(n), s)
-        mat = sps.coo_matrix(
-            (data, (row_indices, column_indices)), shape=(w, n)
-        )
-        return mat.tocsr()
-    else:
-        return rng.normal(size=(w, n)) / np.sqrt(w)
-
-
 def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                lstsq=False, sym_pos=True, cholesky=True, pc=True, ip=False,
-               use_sketching=True, permc_spec='MMD_AT_PLUS_A'):
+               permc_spec='MMD_AT_PLUS_A'):
     """
     Given standard form problem defined by ``A``, ``b``, and ``c``;
     current variable estimates ``x``, ``y``, ``z``, ``tau``, and ``kappa``;
@@ -262,7 +197,6 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
         # If there are no constraints, some solvers fail (understandably)
         # rather than returning empty solution. This gets the job done.
         sparse, lstsq, sym_pos, cholesky = False, False, True, False
-    iterative = use_sketching
     n_x = len(x)
 
     # [4] Equation 8.8
@@ -271,59 +205,14 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
     r_G = c.dot(x) - b.transpose().dot(y) + kappa
     mu = (x.dot(z) + tau * kappa) / (n_x + 1)
 
+    #  Assemble M from [4] Equation 8.31
     Dinv = x / z
 
-    if use_sketching:
-        Dinv_half = np.sqrt(Dinv)
-
-        if sparse:
-            sketched_matrix = (
-                _construct_sketching_matrix(2 * A.shape[0], n_x, 3, sparse=True)
-                * sps.diags(Dinv_half, format="csc")
-                * A.T
-            )
-            R = np.linalg.qr(sketched_matrix.toarray(), mode="r")
-            if use_linear_operators:
-                if use_triangular_solve:
-                    Rinv = sps.linalg.LinearOperator(
-                        R.shape[::-1],
-                        matvec=functools.partial(solve_triangular, R, trans="N"),
-                        rmatvec=functools.partial(solve_triangular, R, trans="T"),
-                    )
-                else:
-                    Rinv = sps.linalg.aslinearoperator(np.linalg.inv(R))
-                A_op = sps.linalg.aslinearoperator(A)
-                Dinv_op = sps.linalg.aslinearoperator(sps.diags(Dinv, format="csc"))
-                M = pylops.LinearOperator(Rinv.T * A_op * Dinv_op * A_op.T * Rinv)
-            else:
-                Rinv = np.linalg.inv(R)
-                M = (
-                    Rinv.T
-                    @ (A * sps.diags(Dinv, format="csc") * A.T).toarray()
-                    @ Rinv
-                )
-        else:
-            sketched_matrix = _construct_sketching_matrix(
-                2 * A.shape[0], n_x, sparse=False
-            ) @ (Dinv_half.reshape(-1, 1) * A.T)
-
-            R = np.linalg.qr(sketched_matrix, mode="r")
-            Rinv = np.linalg.inv(R)
-            M = Rinv.T @ A @ (Dinv.reshape(-1, 1) * A.T) @ Rinv
-
-        preconditioned_solve = _get_solver(
-            M, sparse, iterative, lstsq, sym_pos, cholesky, permc_spec
-        )
-
-        def solve(rhs):
-            return Rinv.dot(preconditioned_solve(Rinv.T.dot(rhs)))
+    if sparse:
+        M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
     else:
-        #  Assemble M from [4] Equation 8.31
-        if sparse:
-            M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
-        else:
-            M = A.dot(Dinv.reshape(-1, 1) * A.T)
-        solve = _get_solver(M, sparse, lstsq, sym_pos, cholesky, permc_spec)
+        M = A.dot(Dinv.reshape(-1, 1) * A.T)
+    solve = _get_solver(M, sparse, lstsq, sym_pos, cholesky, permc_spec)
 
     # pc: "predictor-corrector" [4] Section 4.1
     # In development this option could be turned off
@@ -382,30 +271,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                 # Usually this doesn't happen. If it does, it happens when
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
-                logger.error(e)
-                if iterative:
-                    iterative = False
-                    warn(
-                        "Solving system with option 'iterative':True "
-                        "failed. It is normal for this to happen "
-                        "occasionally, especially as the solution is "
-                        "approached.",
-                        OptimizeWarning,
-                        stacklevel=5,
-                    )
-                elif use_sketching:
-                    logger.error(e)
-                    use_sketching = False
-                    warn(
-                        "Solving system with option 'use_sketching':True "
-                        "failed. It is normal for this to happen "
-                        "occasionally, especially as the solution is "
-                        "approached. However, if you see this frequently, "
-                        "consider setting option 'use_sketching' to False.",
-                        OptimizeWarning,
-                        stacklevel=5,
-                    )
-                elif cholesky:
+                if cholesky:
                     cholesky = False
                     warn(
                         "Solving system with option 'cholesky':True "
@@ -683,8 +549,7 @@ def _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj, header=False):
 
 
 def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
-            sym_pos, cholesky, pc, ip, use_sketching, permc_spec, callback,
-            postsolve_args):
+            sym_pos, cholesky, pc, ip, permc_spec, callback, postsolve_args):
     r"""
     Solve a linear programming problem in standard form:
 
@@ -748,9 +613,6 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
     ip : bool
         Set to ``True`` if the improved initial point suggestion due to [4]_
         Section 4.3 is desired. It's unclear whether this is beneficial.
-    use_sketching : bool (default = False)
-        Set to ``True`` if the normal equations should be preconditioned using
-        sketching.
     permc_spec : str (default = 'MMD_AT_PLUS_A')
         (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
         True``.) A matrix is factorized in each iteration of the algorithm.
@@ -887,8 +749,7 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
             # Solve [4] 8.6 and 8.7/8.13/8.23
             d_x, d_y, d_z, d_tau, d_kappa = _get_delta(
                 A, b, c, x, y, z, tau, kappa, gamma, eta,
-                sparse, lstsq, sym_pos, cholesky, pc, ip,
-                use_sketching, permc_spec)
+                sparse, lstsq, sym_pos, cholesky, pc, ip, permc_spec)
 
             if ip:  # initial point
                 # [4] 4.4
@@ -960,8 +821,7 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
 def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
                 disp=False, alpha0=.99995, beta=0.1, sparse=False, lstsq=False,
                 sym_pos=True, cholesky=None, pc=True, ip=False,
-                use_sketching=False, permc_spec='MMD_AT_PLUS_A',
-                **unknown_options):
+                permc_spec='MMD_AT_PLUS_A', **unknown_options):
     r"""
     Minimize a linear objective function subject to linear
     equality and non-negativity constraints using the interior point method
@@ -1044,9 +904,6 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
         Set to ``True`` if the improved initial point suggestion due to [4]_
         Section 4.3 is desired. Whether this is beneficial or not
         depends on the problem.
-    use_sketching : bool (default = False)
-        Set to ``True`` if the normal equations should be preconditioned using
-        sketching.
     permc_spec : str (default = 'MMD_AT_PLUS_A')
         (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
         True``, and no SuiteSparse.)
@@ -1262,7 +1119,7 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
     x, status, message, iteration = _ip_hsd(A, b, c, c0, alpha0, beta,
                                             maxiter, disp, tol, sparse,
                                             lstsq, sym_pos, cholesky,
-                                            pc, ip, use_sketching, permc_spec,
-                                            callback, postsolve_args)
+                                            pc, ip, permc_spec, callback,
+                                            postsolve_args)
 
     return x, status, message, iteration
