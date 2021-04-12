@@ -25,6 +25,12 @@ from warnings import warn
 from scipy.linalg import LinAlgError
 from .optimize import OptimizeWarning, OptimizeResult, _check_unknown_options
 from ._linprog_util import _postsolve
+from ._linprog_ip_options import (
+    IpmOptions,
+    SearchDirectionOptions,
+    LinearSolverOptions,
+)
+
 has_umfpack = True
 has_cholmod = True
 try:
@@ -39,8 +45,7 @@ except ImportError:
     has_umfpack = False
 
 
-def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
-                cholesky=True, permc_spec='MMD_AT_PLUS_A'):
+def _get_solver(M, options):
     """
     Given solver options, return a handle to the appropriate linear system
     solver.
@@ -49,31 +54,8 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
     ----------
     M : 2-D array
         As defined in [4] Equation 8.31
-    sparse : bool (default = False)
-        True if the system to be solved is sparse. This is typically set
-        True when the original ``A_ub`` and ``A_eq`` arrays are sparse.
-    lstsq : bool (default = False)
-        True if the system is ill-conditioned and/or (nearly) singular and
-        thus a more robust least-squares solver is desired. This is sometimes
-        needed as the solution is approached.
-    sym_pos : bool (default = True)
-        True if the system matrix is symmetric positive definite
-        Sometimes this needs to be set false as the solution is approached,
-        even when the system should be symmetric positive definite, due to
-        numerical difficulties.
-    cholesky : bool (default = True)
-        True if the system is to be solved by Cholesky, rather than LU,
-        decomposition. This is typically faster unless the problem is very
-        small or prone to numerical difficulties.
-    permc_spec : str (default = 'MMD_AT_PLUS_A')
-        Sparsity preservation strategy used by SuperLU. Acceptable values are:
-
-        - ``NATURAL``: natural ordering.
-        - ``MMD_ATA``: minimum degree ordering on the structure of A^T A.
-        - ``MMD_AT_PLUS_A``: minimum degree ordering on the structure of A^T+A.
-        - ``COLAMD``: approximate minimum degree column ordering.
-
-        See SuperLU documentation.
+    options: LinearSolverOptions
+        Provides the options to choose the linear solver.
 
     Returns
     -------
@@ -82,11 +64,13 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
 
     """
     try:
-        if sparse:
-            if lstsq:
+        if options.sparse:
+            if options.lstsq:
+
                 def solve(r, sym_pos=False):
                     return sps.linalg.lsqr(M, r)[0]
-            elif cholesky:
+
+            elif options.cholesky:
                 try:
                     # Will raise an exception in the first call,
                     # or when the matrix changes due to a new problem
@@ -96,25 +80,31 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
                     _get_solver.cholmod_factor.cholesky_inplace(M)
                 solve = _get_solver.cholmod_factor
             else:
-                if has_umfpack and sym_pos:
+                if has_umfpack and options.sym_pos:
                     solve = sps.linalg.factorized(M)
                 else:  # factorized doesn't pass permc_spec
-                    solve = sps.linalg.splu(M, permc_spec=permc_spec).solve
+                    solve = sps.linalg.splu(
+                        M, permc_spec=options.permc_spec
+                    ).solve
 
         else:
-            if lstsq:  # sometimes necessary as solution is approached
+            if options.lstsq:  # sometimes necessary as solution is approached
+
                 def solve(r):
                     return sp.linalg.lstsq(M, r)[0]
-            elif cholesky:
+
+            elif options.cholesky:
                 L = sp.linalg.cho_factor(M)
 
                 def solve(r):
                     return sp.linalg.cho_solve(L, r)
+
             else:
                 # this seems to cache the matrix factorization, so solving
                 # with multiple right hand sides is much faster
-                def solve(r, sym_pos=sym_pos):
+                def solve(r, sym_pos=options.sym_pos):
                     return sp.linalg.solve(M, r, sym_pos=sym_pos)
+
     # There are many things that can go wrong here, and it's hard to say
     # what all of them are. It doesn't really matter: if the matrix can't be
     # factorized, return None. get_solver will be called again with different
@@ -126,9 +116,7 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
     return solve
 
 
-def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
-               lstsq=False, sym_pos=True, cholesky=True, pc=True, ip=False,
-               permc_spec='MMD_AT_PLUS_A'):
+def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
     """
     Given standard form problem defined by ``A``, ``b``, and ``c``;
     current variable estimates ``x``, ``y``, ``z``, ``tau``, and ``kappa``;
@@ -140,46 +128,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
     Parameters
     ----------
     As defined in [4], except:
-    sparse : bool
-        True if the system to be solved is sparse. This is typically set
-        True when the original ``A_ub`` and ``A_eq`` arrays are sparse.
-    lstsq : bool
-        True if the system is ill-conditioned and/or (nearly) singular and
-        thus a more robust least-squares solver is desired. This is sometimes
-        needed as the solution is approached.
-    sym_pos : bool
-        True if the system matrix is symmetric positive definite
-        Sometimes this needs to be set false as the solution is approached,
-        even when the system should be symmetric positive definite, due to
-        numerical difficulties.
-    cholesky : bool
-        True if the system is to be solved by Cholesky, rather than LU,
-        decomposition. This is typically faster unless the problem is very
-        small or prone to numerical difficulties.
-    pc : bool
-        True if the predictor-corrector method of Mehrota is to be used. This
-        is almost always (if not always) beneficial. Even though it requires
-        the solution of an additional linear system, the factorization
-        is typically (implicitly) reused so solution is efficient, and the
-        number of algorithm iterations is typically reduced.
-    ip : bool
-        True if the improved initial point suggestion due to [4] section 4.3
-        is desired. It's unclear whether this is beneficial.
-    permc_spec : str (default = 'MMD_AT_PLUS_A')
-        (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
-        True``.) A matrix is factorized in each iteration of the algorithm.
-        This option specifies how to permute the columns of the matrix for
-        sparsity preservation. Acceptable values are:
-
-        - ``NATURAL``: natural ordering.
-        - ``MMD_ATA``: minimum degree ordering on the structure of A^T A.
-        - ``MMD_AT_PLUS_A``: minimum degree ordering on the structure of A^T+A.
-        - ``COLAMD``: approximate minimum degree column ordering.
-
-        This option can impact the convergence of the
-        interior point algorithm; test different values to determine which
-        performs best for your problem. For more information, refer to
-        ``scipy.sparse.linalg.splu``.
+    options: SearchDirectionOptions
+        Provides the options used to determine the search direction.
 
     Returns
     -------
@@ -196,7 +146,13 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
     if A.shape[0] == 0:
         # If there are no constraints, some solvers fail (understandably)
         # rather than returning empty solution. This gets the job done.
-        sparse, lstsq, sym_pos, cholesky = False, False, True, False
+        options.solver_options = LinearSolverOptions(
+            sparse=False,
+            lstsq=False,
+            sym_pos=True,
+            cholesky=False,
+            permc_spec=options.solver_options.permc_spec,
+        )
     n_x = len(x)
 
     # [4] Equation 8.8
@@ -208,20 +164,19 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
     #  Assemble M from [4] Equation 8.31
     Dinv = x / z
 
-    if sparse:
+    if options.solver_options.sparse:
         M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
     else:
         M = A.dot(Dinv.reshape(-1, 1) * A.T)
-    solve = _get_solver(M, sparse, lstsq, sym_pos, cholesky, permc_spec)
+    solve = _get_solver(M, options.solver_options)
 
     # pc: "predictor-corrector" [4] Section 4.1
     # In development this option could be turned off
     # but it always seems to improve performance substantially
-    n_corrections = 1 if pc else 0
+    n_corrections = 1 if options.pc else 0
 
-    i = 0
     alpha, d_x, d_z, d_tau, d_kappa = 0, 0, 0, 0, 0
-    while i <= n_corrections:
+    for i in range(n_corrections + 1):
         # Reference [4] Eq. 8.6
         rhatp = eta(gamma) * r_P
         rhatd = eta(gamma) * r_D
@@ -232,7 +187,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
         rhattk = gamma * mu - tau * kappa
 
         if i == 1:
-            if ip:  # if the correction is to get "initial point"
+            if options.ip:  # if the correction is to get "initial point"
                 # Reference [4] Eq. 8.23
                 rhatxs = ((1 - alpha) * gamma * mu -
                           x * z - alpha**2 * d_x * d_z)
@@ -257,7 +212,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
         # 3. scipy.sparse.linalg.splu
         # 4. scipy.sparse.linalg.lsqr
         solved = False
-        while(not solved):
+        while not solved:
             try:
                 # [4] Equation 8.28
                 p, q = _sym_solve(Dinv, A, c, b, solve)
@@ -271,8 +226,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                 # Usually this doesn't happen. If it does, it happens when
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
-                if cholesky:
-                    cholesky = False
+                if options.cholesky:
+                    options.cholesky = False
                     warn(
                         "Solving system with option 'cholesky':True "
                         "failed. It is normal for this to happen "
@@ -280,8 +235,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                         "approached. However, if you see this frequently, "
                         "consider setting option 'cholesky' to False.",
                         OptimizeWarning, stacklevel=5)
-                elif sym_pos:
-                    sym_pos = False
+                elif options.sym_pos:
+                    options.sym_pos = False
                     warn(
                         "Solving system with option 'sym_pos':True "
                         "failed. It is normal for this to happen "
@@ -289,8 +244,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                         "approached. However, if you see this frequently, "
                         "consider setting option 'sym_pos' to False.",
                         OptimizeWarning, stacklevel=5)
-                elif not lstsq:
-                    lstsq = True
+                elif not options.lstsq:
+                    options.lstsq = True
                     warn(
                         "Solving system with option 'sym_pos':False "
                         "failed. This may happen occasionally, "
@@ -303,8 +258,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                         OptimizeWarning, stacklevel=5)
                 else:
                     raise e
-                solve = _get_solver(M, sparse, lstsq, sym_pos,
-                                    cholesky, permc_spec)
+                solve = _get_solver(M, options.solver_options)
         # [4] Results after 8.29
         d_tau = ((rhatg + 1 / tau * rhattk - (-c.dot(u) + b.dot(v))) /
                  (1 / tau * kappa + (-c.dot(p) + b.dot(q))))
@@ -317,12 +271,11 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
 
         # [4] 8.12 and "Let alpha be the maximal possible step..." before 8.23
         alpha = _get_step(x, d_x, z, d_z, tau, d_tau, kappa, d_kappa, 1)
-        if ip:  # initial point - see [4] 4.4
+        if options.ip:  # initial point - see [4] 4.4
             gamma = 10
         else:  # predictor-corrector, [4] definition after 8.12
             beta1 = 0.1  # [4] pg. 220 (Table 8.1)
             gamma = (1 - alpha)**2 * min(beta1, (1 - alpha))
-        i += 1
 
     return d_x, d_y, d_z, d_tau, d_kappa
 
@@ -548,8 +501,7 @@ def _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj, header=False):
         float(obj)))
 
 
-def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
-            sym_pos, cholesky, pc, ip, permc_spec, callback, postsolve_args):
+def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
     r"""
     Solve a linear programming problem in standard form:
 
@@ -578,56 +530,6 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
     c0 : float
         Constant term in objective function due to fixed (and eliminated)
         variables. (Purely for display.)
-    alpha0 : float
-        The maximal step size for Mehrota's predictor-corrector search
-        direction; see :math:`\beta_3`of [4] Table 8.1
-    beta : float
-        The desired reduction of the path parameter :math:`\mu` (see  [6]_)
-    maxiter : int
-        The maximum number of iterations of the algorithm.
-    disp : bool
-        Set to ``True`` if indicators of optimization status are to be printed
-        to the console each iteration.
-    tol : float
-        Termination tolerance; see [4]_ Section 4.5.
-    sparse : bool
-        Set to ``True`` if the problem is to be treated as sparse. However,
-        the inputs ``A_eq`` and ``A_ub`` should nonetheless be provided as
-        (dense) arrays rather than sparse matrices.
-    lstsq : bool
-        Set to ``True`` if the problem is expected to be very poorly
-        conditioned. This should always be left as ``False`` unless severe
-        numerical difficulties are frequently encountered, and a better option
-        would be to improve the formulation of the problem.
-    sym_pos : bool
-        Leave ``True`` if the problem is expected to yield a well conditioned
-        symmetric positive definite normal equation matrix (almost always).
-    cholesky : bool
-        Set to ``True`` if the normal equations are to be solved by explicit
-        Cholesky decomposition followed by explicit forward/backward
-        substitution. This is typically faster for moderate, dense problems
-        that are numerically well-behaved.
-    pc : bool
-        Leave ``True`` if the predictor-corrector method of Mehrota is to be
-        used. This is almost always (if not always) beneficial.
-    ip : bool
-        Set to ``True`` if the improved initial point suggestion due to [4]_
-        Section 4.3 is desired. It's unclear whether this is beneficial.
-    permc_spec : str (default = 'MMD_AT_PLUS_A')
-        (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
-        True``.) A matrix is factorized in each iteration of the algorithm.
-        This option specifies how to permute the columns of the matrix for
-        sparsity preservation. Acceptable values are:
-
-        - ``NATURAL``: natural ordering.
-        - ``MMD_ATA``: minimum degree ordering on the structure of A^T A.
-        - ``MMD_AT_PLUS_A``: minimum degree ordering on the structure of A^T+A.
-        - ``COLAMD``: approximate minimum degree column ordering.
-
-        This option can impact the convergence of the
-        interior point algorithm; test different values to determine which
-        performs best for your problem. For more information, refer to
-        ``scipy.sparse.linalg.splu``.
     callback : callable, optional
         If a callback function is provided, it will be called within each
         iteration of the algorithm. The callback function must accept a single
@@ -661,6 +563,9 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
     postsolve_args : tuple
         Data needed by _postsolve to convert the solution to the standard-form
         problem into the solution to the original problem.
+
+    options : IpmOptions
+        Provides all solver options.
 
     Returns
     -------
@@ -699,14 +604,14 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
     x, y, z, tau, kappa = _get_blind_start(A.shape)
 
     # first iteration is special improvement of initial point
-    ip = ip if pc else False
+    options.ip = options.ip if options.pc else False
 
     # [4] 4.5
     rho_p, rho_d, rho_A, rho_g, rho_mu, obj = _indicators(
         A, b, c, c0, x, y, z, tau, kappa)
-    go = rho_p > tol or rho_d > tol or rho_A > tol  # we might get lucky : )
+    go = rho_p > options.tol or rho_d > options.tol or rho_A > options.tol
 
-    if disp:
+    if options.disp:
         _display_iter(rho_p, rho_d, rho_g, "-", rho_mu, obj, header=True)
     if callback is not None:
         x_o, fun, slack, con = _postsolve(x/tau, postsolve_args)
@@ -719,7 +624,7 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
     status = 0
     message = "Optimization terminated successfully."
 
-    if sparse:
+    if options.sparse:
         A = sps.csc_matrix(A)
         A.T = A.transpose()  # A.T is defined for sparse matrices but is slow
         # Redefine it to avoid calculating again
@@ -729,7 +634,7 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
 
         iteration += 1
 
-        if ip:  # initial point
+        if options.ip:  # initial point
             # [4] Section 4.4
             gamma = 1
 
@@ -739,7 +644,7 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
             # gamma = 0 in predictor step according to [4] 4.1
             # if predictor/corrector is off, use mean of complementarity [6]
             # 5.1 / [4] Below Figure 10-4
-            gamma = 0 if pc else beta * np.mean(z * x)
+            gamma = 0 if options.pc else options.beta * np.mean(z * x)
             # [4] Section 4.1
 
             def eta(g=gamma):
@@ -749,9 +654,10 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
             # Solve [4] 8.6 and 8.7/8.13/8.23
             d_x, d_y, d_z, d_tau, d_kappa = _get_delta(
                 A, b, c, x, y, z, tau, kappa, gamma, eta,
-                sparse, lstsq, sym_pos, cholesky, pc, ip, permc_spec)
+                options.search_direction_options()
+            )
 
-            if ip:  # initial point
+            if options.ip:  # initial point
                 # [4] 4.4
                 # Formula after 8.23 takes a full step regardless if this will
                 # take it negative
@@ -763,11 +669,12 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
                 z[z < 1] = 1
                 tau = max(1, tau)
                 kappa = max(1, kappa)
-                ip = False  # done with initial point
+                options.ip = False  # done with initial point
             else:
                 # [4] Section 4.3
-                alpha = _get_step(x, d_x, z, d_z, tau,
-                                  d_tau, kappa, d_kappa, alpha0)
+                alpha = _get_step(
+                    x, d_x, z, d_z, tau, d_tau, kappa, d_kappa, options.alpha0
+                )
                 # [4] Equation 8.9
                 x, y, z, tau, kappa = _do_step(
                     x, y, z, tau, kappa, d_x, d_y, d_z, d_tau, d_kappa, alpha)
@@ -784,9 +691,9 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
         # [4] 4.5
         rho_p, rho_d, rho_A, rho_g, rho_mu, obj = _indicators(
             A, b, c, c0, x, y, z, tau, kappa)
-        go = rho_p > tol or rho_d > tol or rho_A > tol
+        go = rho_p > options.tol or rho_d > options.tol or rho_A > options.tol
 
-        if disp:
+        if options.disp:
             _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj)
         if callback is not None:
             x_o, fun, slack, con = _postsolve(x/tau, postsolve_args)
@@ -797,18 +704,22 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
             callback(res)
 
         # [4] 4.5
-        inf1 = (rho_p < tol and rho_d < tol and rho_g < tol and tau < tol *
-                max(1, kappa))
-        inf2 = rho_mu < tol and tau < tol * min(1, kappa)
+        inf1 = (
+            rho_p < options.tol
+            and rho_d < options.tol
+            and rho_g < options.tol
+            and tau < options.tol * max(1, kappa)
+        )
+        inf2 = rho_mu < options.tol and tau < options.tol * min(1, kappa)
         if inf1 or inf2:
             # [4] Lemma 8.4 / Theorem 8.3
-            if b.transpose().dot(y) > tol:
+            if b.transpose().dot(y) > options.tol:
                 status = 2
             else:  # elif c.T.dot(x) < tol: ? Probably not necessary.
                 status = 3
             message = _get_message(status)
             break
-        elif iteration >= maxiter:
+        elif iteration >= options.maxiter:
             status = 1
             message = _get_message(status)
             break
@@ -818,10 +729,7 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
     return x_hat, status, message, iteration
 
 
-def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
-                disp=False, alpha0=.99995, beta=0.1, sparse=False, lstsq=False,
-                sym_pos=True, cholesky=None, pc=True, ip=False,
-                permc_spec='MMD_AT_PLUS_A', **unknown_options):
+def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
     r"""
     Minimize a linear objective function subject to linear
     equality and non-negativity constraints using the interior point method
@@ -857,73 +765,73 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
     postsolve_args : tuple
         Data needed by _postsolve to convert the solution to the standard-form
         problem into the solution to the original problem.
+    options : dict, optional
+        A dictionary of solver options. The following options are accepted by
+        this solver:
 
-    Options
-    -------
-    maxiter : int (default = 1000)
-        The maximum number of iterations of the algorithm.
-    tol : float (default = 1e-8)
-        Termination tolerance to be used for all termination criteria;
-        see [4]_ Section 4.5.
-    disp : bool (default = False)
-        Set to ``True`` if indicators of optimization status are to be printed
-        to the console each iteration.
-    alpha0 : float (default = 0.99995)
-        The maximal step size for Mehrota's predictor-corrector search
-        direction; see :math:`\beta_{3}` of [4]_ Table 8.1.
-    beta : float (default = 0.1)
-        The desired reduction of the path parameter :math:`\mu` (see [6]_)
-        when Mehrota's predictor-corrector is not in use (uncommon).
-    sparse : bool (default = False)
-        Set to ``True`` if the problem is to be treated as sparse after
-        presolve. If either ``A_eq`` or ``A_ub`` is a sparse matrix,
-        this option will automatically be set ``True``, and the problem
-        will be treated as sparse even during presolve. If your constraint
-        matrices contain mostly zeros and the problem is not very small (less
-        than about 100 constraints or variables), consider setting ``True``
-        or providing ``A_eq`` and ``A_ub`` as sparse matrices.
-    lstsq : bool (default = False)
-        Set to ``True`` if the problem is expected to be very poorly
-        conditioned. This should always be left ``False`` unless severe
-        numerical difficulties are encountered. Leave this at the default
-        unless you receive a warning message suggesting otherwise.
-    sym_pos : bool (default = True)
-        Leave ``True`` if the problem is expected to yield a well conditioned
-        symmetric positive definite normal equation matrix
-        (almost always). Leave this at the default unless you receive
-        a warning message suggesting otherwise.
-    cholesky : bool (default = True)
-        Set to ``True`` if the normal equations are to be solved by explicit
-        Cholesky decomposition followed by explicit forward/backward
-        substitution. This is typically faster for problems
-        that are numerically well-behaved.
-    pc : bool (default = True)
-        Leave ``True`` if the predictor-corrector method of Mehrota is to be
-        used. This is almost always (if not always) beneficial.
-    ip : bool (default = False)
-        Set to ``True`` if the improved initial point suggestion due to [4]_
-        Section 4.3 is desired. Whether this is beneficial or not
-        depends on the problem.
-    permc_spec : str (default = 'MMD_AT_PLUS_A')
-        (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
-        True``, and no SuiteSparse.)
-        A matrix is factorized in each iteration of the algorithm.
-        This option specifies how to permute the columns of the matrix for
-        sparsity preservation. Acceptable values are:
+        maxiter : int (default = 1000)
+            The maximum number of iterations of the algorithm.
+        tol : float (default = 1e-8)
+            Termination tolerance to be used for all termination criteria;
+            see [4]_ Section 4.5.
+        disp : bool (default = False)
+            Set to ``True`` if indicators of optimization status are to be
+            printed to the console each iteration.
+        alpha0 : float (default = 0.99995)
+            The maximal step size for Mehrota's predictor-corrector search
+            direction; see :math:`\beta_{3}` of [4]_ Table 8.1.
+        beta : float (default = 0.1)
+            The desired reduction of the path parameter :math:`\mu` (see [6]_)
+            when Mehrota's predictor-corrector is not in use (uncommon).
+        sparse : bool (default = False)
+            Set to ``True`` if the problem is to be treated as sparse after
+            presolve. If either ``A_eq`` or ``A_ub`` is a sparse matrix,
+            this option will automatically be set ``True``, and the problem
+            will be treated as sparse even during presolve. If your constraint
+            matrices contain mostly zeros and the problem is not very small
+            (less than about 100 constraints or variables), consider setting
+            ``True`` or providing ``A_eq`` and ``A_ub`` as sparse matrices.
+        lstsq : bool (default = False)
+            Set to ``True`` if the problem is expected to be very poorly
+            conditioned. This should always be left ``False`` unless severe
+            numerical difficulties are encountered. Leave this at the default
+            unless you receive a warning message suggesting otherwise.
+        sym_pos : bool (default = True)
+            Leave ``True`` if the problem is expected to yield a well
+            conditioned symmetric positive definite normal equation matrix
+            (almost always). Leave this at the default unless you receive
+            a warning message suggesting otherwise.
+        cholesky : bool (default = True)
+            Set to ``True`` if the normal equations are to be solved by explicit
+            Cholesky decomposition followed by explicit forward/backward
+            substitution. This is typically faster for problems
+            that are numerically well-behaved.
+        pc : bool (default = True)
+            Leave ``True`` if the predictor-corrector method of Mehrota is to be
+            used. This is almost always (if not always) beneficial.
+        ip : bool (default = False)
+            Set to ``True`` if the improved initial point suggestion due to [4]_
+            Section 4.3 is desired. Whether this is beneficial or not
+            depends on the problem.
+        permc_spec : str (default = 'MMD_AT_PLUS_A')
+            (Has effect only with ``sparse = True``, ``lstsq = False``,
+            ``sym_pos = True``, and no SuiteSparse.)
+            A matrix is factorized in each iteration of the algorithm.
+            This option specifies how to permute the columns of the matrix for
+            sparsity preservation. Acceptable values are:
 
-        - ``NATURAL``: natural ordering.
-        - ``MMD_ATA``: minimum degree ordering on the structure of A^T A.
-        - ``MMD_AT_PLUS_A``: minimum degree ordering on the structure of A^T+A.
-        - ``COLAMD``: approximate minimum degree column ordering.
+            - ``NATURAL``: natural ordering.
+            - ``MMD_ATA``: minimum degree ordering on the structure of A^T A.
+            - ``MMD_AT_PLUS_A``: minimum degree ordering on the structure of
+              A^T+A.
+            - ``COLAMD``: approximate minimum degree column ordering.
 
-        This option can impact the convergence of the
-        interior point algorithm; test different values to determine which
-        performs best for your problem. For more information, refer to
-        ``scipy.sparse.linalg.splu``.
-    unknown_options : dict
-        Optional arguments not used by this particular solver. If
-        `unknown_options` is non-empty a warning is issued listing all
-        unused options.
+            This option can impact the convergence of the
+            interior point algorithm; test different values to determine which
+            performs best for your problem. For more information, refer to
+            ``scipy.sparse.linalg.splu``.
+
+        A warning is issued for all unused options provided by the user.
 
     Returns
     -------
@@ -988,9 +896,11 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
 
     For sparse problems:
 
-    1. ``sksparse.cholmod.cholesky`` (if scikit-sparse and SuiteSparse are installed)
+    1. ``sksparse.cholmod.cholesky`` (if scikit-sparse and SuiteSparse are
+       installed)
 
-    2. ``scipy.sparse.linalg.factorized`` (if scikit-umfpack and SuiteSparse are installed)
+    2. ``scipy.sparse.linalg.factorized`` (if scikit-umfpack and SuiteSparse are
+       installed)
 
     3. ``scipy.sparse.linalg.splu`` (which uses SuperLU distributed with SciPy)
 
@@ -1078,48 +988,60 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
 
     """
 
+    known_options = {
+        k: v for k, v in options.items() if k in IpmOptions.all_options()
+    }
+    unknown_options = {
+        k: v for k, v in options.items() if k not in IpmOptions.all_options()
+    }
+
     _check_unknown_options(unknown_options)
+    options = IpmOptions(**known_options)
 
     # These should be warnings, not errors
-    if (cholesky or cholesky is None) and sparse and not has_cholmod:
-        if cholesky:
+    if (
+        (options.cholesky or options.cholesky is None)
+        and options.sparse
+        and not has_cholmod
+    ):
+        if options.cholesky:
             warn("Sparse cholesky is only available with scikit-sparse. "
                  "Setting `cholesky = False`",
                  OptimizeWarning, stacklevel=3)
-        cholesky = False
+        options.cholesky = False
 
-    if sparse and lstsq:
+    if options.sparse and options.lstsq:
         warn("Option combination 'sparse':True and 'lstsq':True "
              "is not recommended.",
              OptimizeWarning, stacklevel=3)
 
-    if lstsq and cholesky:
+    if options.lstsq and options.cholesky:
         warn("Invalid option combination 'lstsq':True "
              "and 'cholesky':True; option 'cholesky' has no effect when "
              "'lstsq' is set True.",
              OptimizeWarning, stacklevel=3)
 
     valid_permc_spec = ('NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD')
-    if permc_spec.upper() not in valid_permc_spec:
-        warn("Invalid permc_spec option: '" + str(permc_spec) + "'. "
+    if options.permc_spec.upper() not in valid_permc_spec:
+        warn("Invalid permc_spec option: '" + str(options.permc_spec) + "'. "
              "Acceptable values are 'NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', "
              "and 'COLAMD'. Reverting to default.",
              OptimizeWarning, stacklevel=3)
-        permc_spec = 'MMD_AT_PLUS_A'
+        options.permc_spec = 'MMD_AT_PLUS_A'
 
     # This can be an error
-    if not sym_pos and cholesky:
+    if not options.sym_pos and options.cholesky:
         raise ValueError(
             "Invalid option combination 'sym_pos':False "
             "and 'cholesky':True: Cholesky decomposition is only possible "
             "for symmetric positive definite matrices.")
 
-    cholesky = cholesky or (cholesky is None and sym_pos and not lstsq)
+    cholesky = options.cholesky or (
+        options.cholesky is None and options.sym_pos and not options.lstsq
+    )
 
-    x, status, message, iteration = _ip_hsd(A, b, c, c0, alpha0, beta,
-                                            maxiter, disp, tol, sparse,
-                                            lstsq, sym_pos, cholesky,
-                                            pc, ip, permc_spec, callback,
-                                            postsolve_args)
+    x, status, message, iteration = _ip_hsd(
+        A, b, c, c0, callback, postsolve_args, options
+    )
 
     return x, status, message, iteration
