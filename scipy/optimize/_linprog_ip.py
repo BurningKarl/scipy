@@ -20,8 +20,10 @@ References
 
 import functools
 import numpy as np
+import pylops
 import scipy as sp
 import scipy.sparse as sps
+from logzero import logger
 from warnings import warn
 from scipy.linalg import LinAlgError, solve_triangular
 from .optimize import OptimizeWarning, OptimizeResult, _check_unknown_options
@@ -40,9 +42,11 @@ except ImportError:
     has_umfpack = False
 
 default_rng = np.random.default_rng()
+use_linear_operators = False
+use_triangular_solve = False
 
 
-def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
+def _get_solver(M, sparse=False, iterative=False, lstsq=False, sym_pos=True,
                 cholesky=True, permc_spec='MMD_AT_PLUS_A'):
     """
     Given solver options, return a handle to the appropriate linear system
@@ -55,6 +59,8 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
     sparse : bool (default = False)
         True if the system to be solved is sparse. This is typically set
         True when the original ``A_ub`` and ``A_eq`` arrays are sparse.
+    iterative : bool (default = False)
+        True if the system is to be solved using an iterative method.
     lstsq : bool (default = False)
         True if the system is ill-conditioned and/or (nearly) singular and
         thus a more robust least-squares solver is desired. This is sometimes
@@ -85,16 +91,27 @@ def _get_solver(M, sparse=False, lstsq=False, sym_pos=True,
 
     """
     try:
-        if sparse:
-            if isinstance(M, sps.linalg.LinearOperator):
+        if iterative:
+            if isinstance(M, pylops.LinearOperator):
 
                 def solve(r):
-                    x, info = sps.linalg.cg(M, r, tol=1e-12, atol=0)
+                    x, iit, cost = pylops.optimization.solver.cg(
+                        M, r, x0=np.zeros(M.shape[1]), tol=1e-10, niter=1000
+                    )
+                    if iit == 100:
+                        logger.warn("Did not converge!")
+                    return x
+
+            else:
+
+                def solve(r):
+                    x, info = sps.linalg.cg(M, r, tol=1e-10, atol=1e-10)
                     if info != 0:
                         raise LinAlgError("CG failed!")
                     return x
 
-            elif lstsq:
+        elif sparse:
+            if lstsq:
                 def solve(r, sym_pos=False):
                     return sps.linalg.lsqr(M, r)[0]
             elif cholesky:
@@ -245,6 +262,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
         # If there are no constraints, some solvers fail (understandably)
         # rather than returning empty solution. This gets the job done.
         sparse, lstsq, sym_pos, cholesky = False, False, True, False
+    iterative = use_sketching
     n_x = len(x)
 
     # [4] Equation 8.8
@@ -264,26 +282,34 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                 * sps.diags(Dinv_half, format="csc")
                 * A.T
             )
-            _, R = np.linalg.qr(sketched_matrix.toarray())
-            Rinv = sps.linalg.LinearOperator(
-                R.shape[::-1],
-                matvec=functools.partial(solve_triangular, R, lower=False),
-                rmatvec=functools.partial(solve_triangular, R.T, lower=True),
-            )
-            A_op = sps.linalg.aslinearoperator(A)
-            Dinv_op = sps.linalg.aslinearoperator(sps.diags(Dinv, format="csc"))
-            M = Rinv.T * A_op * Dinv_op * A_op.T * Rinv
+            R = np.linalg.qr(sketched_matrix.toarray(), mode="r")
+            if use_linear_operators:
+                if use_triangular_solve:
+                    Rinv = sps.linalg.LinearOperator(
+                        R.shape[::-1],
+                        matvec=functools.partial(solve_triangular, R, trans="N"),
+                        rmatvec=functools.partial(solve_triangular, R, trans="T"),
+                    )
+                else:
+                    Rinv = sps.linalg.aslinearoperator(np.linalg.inv(R))
+                A_op = sps.linalg.aslinearoperator(A)
+                Dinv_op = sps.linalg.aslinearoperator(sps.diags(Dinv, format="csc"))
+                M = pylops.LinearOperator(Rinv.T * A_op * Dinv_op * A_op.T * Rinv)
+            else:
+                Rinv = np.linalg.inv(R)
+                Dinv = sps.diags(Dinv, format="csc")
+                M = Rinv.T @ (A * Dinv * A.T).toarray() @ Rinv
         else:
             sketched_matrix = _construct_sketching_matrix(
                 2 * A.shape[0], n_x, sparse=False
             ) @ (Dinv_half.reshape(-1, 1) * A.T)
 
-            _, R = np.linalg.qr(sketched_matrix)
+            R = np.linalg.qr(sketched_matrix, mode="r")
             Rinv = np.linalg.inv(R)
             M = Rinv.T @ A @ (Dinv.reshape(-1, 1) * A.T) @ Rinv
 
         preconditioned_solve = _get_solver(
-            M, sparse, lstsq, sym_pos, cholesky, permc_spec
+            M, sparse, iterative, lstsq, sym_pos, cholesky, permc_spec
         )
 
         def solve(rhs):
@@ -353,14 +379,26 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                 # Usually this doesn't happen. If it does, it happens when
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
-                if use_sketching:
+                logger.error(e)
+                if iterative:
+                    iterative = False
+                    warn(
+                        "Solving system with option 'iterative':True "
+                        "failed. It is normal for this to happen "
+                        "occasionally, especially as the solution is "
+                        "approached.",
+                        OptimizeWarning,
+                        stacklevel=5,
+                    )
+                elif use_sketching:
+                    logger.error(e)
                     use_sketching = False
                     warn(
                         "Solving system with option 'use_sketching':True "
                         "failed. It is normal for this to happen "
                         "occasionally, especially as the solution is "
                         "approached. However, if you see this frequently, "
-                        "consider setting option 'cholesky' to False.",
+                        "consider setting option 'use_sketching' to False.",
                         OptimizeWarning,
                         stacklevel=5,
                     )
