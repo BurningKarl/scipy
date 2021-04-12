@@ -42,7 +42,7 @@ except ImportError:
     has_umfpack = False
 
 default_rng = np.random.default_rng()
-use_linear_operators = False
+use_linear_operators = True
 use_triangular_solve = False
 
 
@@ -297,8 +297,11 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, sparse=False,
                 M = pylops.LinearOperator(Rinv.T * A_op * Dinv_op * A_op.T * Rinv)
             else:
                 Rinv = np.linalg.inv(R)
-                Dinv = sps.diags(Dinv, format="csc")
-                M = Rinv.T @ (A * Dinv * A.T).toarray() @ Rinv
+                M = (
+                    Rinv.T
+                    @ (A * sps.diags(Dinv, format="csc") * A.T).toarray()
+                    @ Rinv
+                )
         else:
             sketched_matrix = _construct_sketching_matrix(
                 2 * A.shape[0], n_x, sparse=False
