@@ -642,7 +642,8 @@ def _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj, header=False):
 
 
 def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
-            sym_pos, cholesky, pc, ip, permc_spec, callback, postsolve_args):
+            sym_pos, cholesky, pc, ip, use_sketching, permc_spec, callback,
+            postsolve_args):
     r"""
     Solve a linear programming problem in standard form:
 
@@ -706,6 +707,9 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
     ip : bool
         Set to ``True`` if the improved initial point suggestion due to [4]_
         Section 4.3 is desired. It's unclear whether this is beneficial.
+    use_sketching : bool (default = False)
+        Set to ``True`` if the normal equations should be preconditioned using
+        sketching.
     permc_spec : str (default = 'MMD_AT_PLUS_A')
         (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
         True``.) A matrix is factorized in each iteration of the algorithm.
@@ -842,7 +846,8 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
             # Solve [4] 8.6 and 8.7/8.13/8.23
             d_x, d_y, d_z, d_tau, d_kappa = _get_delta(
                 A, b, c, x, y, z, tau, kappa, gamma, eta,
-                sparse, lstsq, sym_pos, cholesky, pc, ip, True, permc_spec)
+                sparse, lstsq, sym_pos, cholesky, pc, ip,
+                use_sketching, permc_spec)
 
             if ip:  # initial point
                 # [4] 4.4
@@ -914,7 +919,8 @@ def _ip_hsd(A, b, c, c0, alpha0, beta, maxiter, disp, tol, sparse, lstsq,
 def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
                 disp=False, alpha0=.99995, beta=0.1, sparse=False, lstsq=False,
                 sym_pos=True, cholesky=None, pc=True, ip=False,
-                permc_spec='MMD_AT_PLUS_A', **unknown_options):
+                use_sketching=False, permc_spec='MMD_AT_PLUS_A',
+                **unknown_options):
     r"""
     Minimize a linear objective function subject to linear
     equality and non-negativity constraints using the interior point method
@@ -997,6 +1003,9 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
         Set to ``True`` if the improved initial point suggestion due to [4]_
         Section 4.3 is desired. Whether this is beneficial or not
         depends on the problem.
+    use_sketching : bool (default = False)
+        Set to ``True`` if the normal equations should be preconditioned using
+        sketching.
     permc_spec : str (default = 'MMD_AT_PLUS_A')
         (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
         True``, and no SuiteSparse.)
@@ -1212,7 +1221,7 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, maxiter=1000, tol=1e-8,
     x, status, message, iteration = _ip_hsd(A, b, c, c0, alpha0, beta,
                                             maxiter, disp, tol, sparse,
                                             lstsq, sym_pos, cholesky,
-                                            pc, ip, permc_spec, callback,
-                                            postsolve_args)
+                                            pc, ip, use_sketching, permc_spec,
+                                            callback, postsolve_args)
 
     return x, status, message, iteration
