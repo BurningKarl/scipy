@@ -21,6 +21,9 @@ References
 import numpy as np
 import scipy as sp
 import scipy.sparse as sps
+import wandb
+from codetiming import Timer
+from logzero import logger
 from warnings import warn
 from scipy.linalg import LinAlgError, solve_triangular
 from .optimize import OptimizeWarning, OptimizeResult
@@ -122,37 +125,55 @@ def _assemble_matrix(A, Dinv, options):
         return M, lambda solve: solve
     elif method is PreconditioningMethod.SKETCHING:
         Dinv_half = np.sqrt(Dinv)
-        sketching_matrix = _construct_sketching_matrix(
-            int(options.preconditioning.sketching_factor * A.shape[0]),
-            A.shape[1],
-            options.preconditioning.sketching_sparsity,
-            sparse=options.linear_solver.sparse,
-        )
-        if options.linear_solver.sparse:
-            sketched_matrix = (
-                sketching_matrix @ sps.diags(Dinv_half, format="csc") @ A.T
-            ).toarray()
-        else:
-            sketched_matrix = sketching_matrix @ (
-                Dinv_half.reshape(-1, 1) * A.T
-            )
-        R = np.linalg.qr(sketched_matrix, mode="r")
 
-        if options.linear_solver.linear_operators:
-            if options.preconditioning.triangular_solve:
-                Rinv = sps.linalg.LinearOperator(
-                    R.shape,  # R is square
-                    matvec=lambda x: solve_triangular(R, x, trans="N"),
-                    rmatvec=lambda x: solve_triangular(R, x, trans="T"),
-                )
-            else:
-                Rinv = sps.linalg.aslinearoperator(np.linalg.inv(R))
-        else:
+        with Timer(logger=None) as generate_sketch_timer:
+            sketching_matrix = _construct_sketching_matrix(
+                int(options.preconditioning.sketching_factor * A.shape[0]),
+                A.shape[1],
+                options.preconditioning.sketching_sparsity,
+                sparse=options.linear_solver.sparse,
+            )
+
+        with Timer(logger=None) as sketching_timer:
             if options.linear_solver.sparse:
-                Rinv = sps.csc_matrix(np.linalg.inv(R))
+                sketched_matrix = (
+                    sketching_matrix @ sps.diags(Dinv_half, format="csc") @ A.T
+                ).toarray()
             else:
-                Rinv = np.linalg.inv(R)
-        matrix = Rinv.T @ M @ Rinv
+                sketched_matrix = sketching_matrix @ (
+                    Dinv_half.reshape(-1, 1) * A.T
+                )
+
+        with Timer(logger=None) as decomposition_timer:
+            R = np.linalg.qr(sketched_matrix, mode="r")
+
+        with Timer(logger=None) as product_timer:
+            if options.linear_solver.linear_operators:
+                if options.preconditioning.triangular_solve:
+                    Rinv = sps.linalg.LinearOperator(
+                        R.shape,  # R is square
+                        matvec=lambda x: solve_triangular(R, x, trans="N"),
+                        rmatvec=lambda x: solve_triangular(R, x, trans="T"),
+                    )
+                else:
+                    Rinv = sps.linalg.aslinearoperator(np.linalg.inv(R))
+            else:
+                if options.linear_solver.sparse:
+                    Rinv = sps.csc_matrix(np.linalg.inv(R))
+                else:
+                    Rinv = np.linalg.inv(R)
+            matrix = Rinv.T @ M @ Rinv
+
+        statistics = {
+            "generate_sketch_duration": generate_sketch_timer.last,
+            "sketching_duration": sketching_timer.last,
+            "decomposition_duration": decomposition_timer.last,
+            "product_duration": product_timer.last,
+            "condition_number": np.linalg.cond(M.toarray()),
+            "condition_number_sketched": np.linalg.cond(matrix.toarray()),
+        }
+        logger.info(f"{statistics}")
+        wandb.log(statistics)
 
         def preconditioned_solver(solve):
             return lambda r: Rinv @ solve(Rinv.T @ r)
@@ -182,6 +203,7 @@ def _get_solver(M, options):
     try:
         if options.linear_solver.iterative:
             if options.linear_solver.sym_pos:
+                logger.debug("Using scipy.sparse.linalg.cg")
 
                 def solve(r):
                     x, info = sps.linalg.cg(
@@ -193,6 +215,7 @@ def _get_solver(M, options):
                         return x
 
             else:
+                logger.debug("Using scipy.sparse.linalg.gmres")
 
                 def solve(r):
                     x, info = sps.linalg.gmres(
@@ -205,12 +228,14 @@ def _get_solver(M, options):
 
         elif options.linear_solver.sparse:
             if options.linear_solver.lstsq:
+                logger.debug("Using scipy.sparse.linalg.lsqr")
 
                 def solve(r, sym_pos=False):
                     return sps.linalg.lsqr(M, r)[0]
 
             elif options.linear_solver.cholesky:
                 if has_cholmod:
+                    logger.debug("Using sksparse.cholmod.analyze")
                     try:
                         # Will raise an exception in the first call,
                         # or when the matrix changes due to a new problem
@@ -220,6 +245,7 @@ def _get_solver(M, options):
                         _get_solver.cholmod_factor.cholesky_inplace(M)
                     solve = _get_solver.cholmod_factor
                 else:
+                    logger.debug("Using scipy.linalg.cho_factor")
                     L = sp.linalg.cho_factor(M.toarray())
 
                     def solve(r):
@@ -227,8 +253,10 @@ def _get_solver(M, options):
 
             else:
                 if has_umfpack and options.linear_solver.sym_pos:
+                    logger.debug("Using scipy.sparse.linalg.factorized")
                     solve = sps.linalg.factorized(M)
                 else:  # factorized doesn't pass permc_spec
+                    logger.debug("Using scipy.sparse.linalg.splu")
                     solve = sps.linalg.splu(
                         M, permc_spec=options.linear_solver.permc_spec
                     ).solve
@@ -236,19 +264,23 @@ def _get_solver(M, options):
         else:
             if options.linear_solver.lstsq:
                 # sometimes necessary as solution is approached
+                logger.debug("Using scipy.linalg.lstsq")
 
                 def solve(r):
                     return sp.linalg.lstsq(M, r)[0]
 
             elif options.linear_solver.cholesky:
+                logger.debug("Using scipy.linalg.cho_factor")
                 L = sp.linalg.cho_factor(M)
 
                 def solve(r):
                     return sp.linalg.cho_solve(L, r)
 
             else:
+                logger.debug("Using scipy.linalg.solve")
                 # this seems to cache the matrix factorization, so solving
                 # with multiple right hand sides is much faster
+
                 def solve(r, sym_pos=options.linear_solver.sym_pos):
                     return sp.linalg.solve(M, r, sym_pos=sym_pos)
 
@@ -258,7 +290,9 @@ def _get_solver(M, options):
     # inputs, and a new routine will try to factorize the matrix.
     except KeyboardInterrupt:
         raise
-    except Exception:
+    except Exception as e:
+        logger.error(e)
+        raise
         return None
     return solve
 
@@ -366,6 +400,10 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                 # Usually this doesn't happen. If it does, it happens when
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
+                logger.error(e)
+                if not isinstance(e, LinAlgError):
+                    raise
+
                 if options.linear_solver.iterative:
                     options.linear_solver.iterative = False
                     if options.linear_solver.linear_operators:
@@ -606,6 +644,19 @@ def _indicators(A, b, c, c0, x, y, z, tau, kappa):
     rho_d = norm(r_d(y, z, tau)) / max(1, norm(r_d0))
     rho_g = norm(r_g(x, y, kappa)) / max(1, norm(r_g0))
     rho_mu = mu(x, tau, z, kappa) / mu_0
+
+    wandb.log(
+        {
+            "rho_A": rho_A,
+            "rho_p": rho_p,
+            "rho_d": rho_d,
+            "rho_g": rho_g,
+            "rho_mu": rho_mu,
+            "mu": rho_mu * mu_0,
+        },
+        commit=False,
+    )
+
     return rho_p, rho_d, rho_A, rho_g, rho_mu, obj
 
 
@@ -848,10 +899,13 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
                     x, y, z, tau, kappa, d_x, d_y, d_z, d_tau, d_kappa, alpha)
 
         except (LinAlgError, FloatingPointError,
-                ValueError, ZeroDivisionError):
+                ValueError, ZeroDivisionError) as e:
             # this can happen when sparse solver is used and presolve
             # is turned off. Also observed ValueError in AppVeyor Python 3.6
             # Win32 build (PR #8676). I've never seen it otherwise.
+            logger.error(e)
+            raise
+
             status = 4
             message = _get_message(status)
             break
