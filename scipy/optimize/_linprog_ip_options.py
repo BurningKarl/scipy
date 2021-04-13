@@ -63,6 +63,7 @@ class LinearSolverOptions:
     lstsq: bool
     sym_pos: bool
     cholesky: bool
+    iterative: bool
     permc_spec: str
 
 
@@ -168,6 +169,7 @@ class IpmOptions:
     lstsq: bool = False
     sym_pos: bool = True
     cholesky: bool = True
+    iterative: bool = False
     pc: bool = True
     ip: bool = False
     permc_spec: str = "MMD_AT_PLUS_A"
@@ -185,6 +187,7 @@ class IpmOptions:
                 lstsq=self.lstsq,
                 sym_pos=self.sym_pos,
                 cholesky=self.cholesky,
+                iterative=self.iterative,
                 permc_spec=self.permc_spec,
             ),
         )

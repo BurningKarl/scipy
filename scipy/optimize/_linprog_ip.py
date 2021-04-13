@@ -71,7 +71,24 @@ def _get_solver(A, Dinv, options):
         M = A.dot(Dinv.reshape(-1, 1) * A.T)
 
     try:
-        if options.sparse:
+        if options.iterative:
+            if options.sym_pos:
+
+                def solve(r):
+                    x, info = sps.linalg.cg(M, r, tol=0, atol=1e-10)
+                    if info != 0:
+                        raise LinAlgError("CG failed!")
+                    return x
+
+            else:
+
+                def solve(r):
+                    x, info = sps.linalg.gmres(M, r, tol=0, atol=1e-10)
+                    if info != 0:
+                        raise LinAlgError("GMRES failed!")
+                    return x
+
+        elif options.sparse:
             if options.lstsq:
 
                 def solve(r, sym_pos=False):
@@ -158,6 +175,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
             lstsq=False,
             sym_pos=True,
             cholesky=False,
+            iterative=False,
             permc_spec=options.solver_options.permc_spec,
         )
     n_x = len(x)
@@ -228,8 +246,17 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                 # Usually this doesn't happen. If it does, it happens when
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
-                if options.cholesky:
-                    options.cholesky = False
+                if options.solver_options.iterative:
+                    options.solver_options.iterative = False
+                    warn(
+                        "Solving system with option 'iterative':True "
+                        "failed. It is normal for this to happen "
+                        "occasionally, especially as the solution is "
+                        "approached. However, if you see this frequently, "
+                        "consider setting option 'iterative' to False.",
+                        OptimizeWarning, stacklevel=5)
+                elif options.solver_options.cholesky:
+                    options.solver_options.cholesky = False
                     warn(
                         "Solving system with option 'cholesky':True "
                         "failed. It is normal for this to happen "
@@ -237,8 +264,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         "approached. However, if you see this frequently, "
                         "consider setting option 'cholesky' to False.",
                         OptimizeWarning, stacklevel=5)
-                elif options.sym_pos:
-                    options.sym_pos = False
+                elif options.solver_options.sym_pos:
+                    options.solver_options.sym_pos = False
                     warn(
                         "Solving system with option 'sym_pos':True "
                         "failed. It is normal for this to happen "
@@ -246,8 +273,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         "approached. However, if you see this frequently, "
                         "consider setting option 'sym_pos' to False.",
                         OptimizeWarning, stacklevel=5)
-                elif not options.lstsq:
-                    options.lstsq = True
+                elif not options.solver_options.lstsq:
+                    options.solver_options.lstsq = True
                     warn(
                         "Solving system with option 'sym_pos':False "
                         "failed. This may happen occasionally, "
@@ -260,7 +287,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         OptimizeWarning, stacklevel=5)
                 else:
                     raise e
-                solve = _get_solver(M, options.solver_options)
+                solve = _get_solver(A, Dinv, options.solver_options)
         # [4] Results after 8.29
         d_tau = ((rhatg + 1 / tau * rhattk - (-c.dot(u) + b.dot(v))) /
                  (1 / tau * kappa + (-c.dot(p) + b.dot(q))))
@@ -1022,6 +1049,24 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
              "and 'cholesky':True; option 'cholesky' has no effect when "
              "'lstsq' is set True.",
              OptimizeWarning, stacklevel=3)
+
+    if options.iterative and options.cholesky:
+        warn(
+            "Invalid option combination 'iterative':True "
+            "and 'cholesky':True; option 'cholesky' has no effect when "
+            "'iterative' is set True.",
+            OptimizeWarning,
+            stacklevel=3,
+        )
+
+    if options.iterative and options.lstsq:
+        warn(
+            "Invalid option combination 'iterative':True "
+            "and 'lstsq':True; option 'lstsq' has no effect when "
+            "'iterative' is set True.",
+            OptimizeWarning,
+            stacklevel=3,
+        )
 
     valid_permc_spec = ('NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD')
     if options.permc_spec.upper() not in valid_permc_spec:
