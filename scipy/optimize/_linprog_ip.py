@@ -95,14 +95,21 @@ def _get_solver(A, Dinv, options):
                     return sps.linalg.lsqr(M, r)[0]
 
             elif options.cholesky:
-                try:
-                    # Will raise an exception in the first call,
-                    # or when the matrix changes due to a new problem
-                    _get_solver.cholmod_factor.cholesky_inplace(M)
-                except Exception:
-                    _get_solver.cholmod_factor = cholmod_analyze(M)
-                    _get_solver.cholmod_factor.cholesky_inplace(M)
-                solve = _get_solver.cholmod_factor
+                if has_cholmod:
+                    try:
+                        # Will raise an exception in the first call,
+                        # or when the matrix changes due to a new problem
+                        _get_solver.cholmod_factor.cholesky_inplace(M)
+                    except Exception:
+                        _get_solver.cholmod_factor = cholmod_analyze(M)
+                        _get_solver.cholmod_factor.cholesky_inplace(M)
+                    solve = _get_solver.cholmod_factor
+                else:
+                    L = sp.linalg.cho_factor(M.toarray())
+
+                    def solve(r):
+                        return sp.linalg.cho_solve(L, r)
+
             else:
                 if has_umfpack and options.sym_pos:
                     solve = sps.linalg.factorized(M)
@@ -1028,16 +1035,13 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
     options = IpmOptions(**known_options)
 
     # These should be warnings, not errors
-    if (
-        (options.cholesky or options.cholesky is None)
-        and options.sparse
-        and not has_cholmod
-    ):
-        if options.cholesky:
-            warn("Sparse cholesky is only available with scikit-sparse. "
-                 "Setting `cholesky = False`",
-                 OptimizeWarning, stacklevel=3)
-        options.cholesky = False
+    if options.cholesky and options.sparse and not has_cholmod:
+        warn(
+            "Sparse cholesky is only available with scikit-sparse. "
+            "Dense cholesky will be used.",
+            OptimizeWarning,
+            stacklevel=3,
+        )
 
     if options.sparse and options.lstsq:
         warn("Option combination 'sparse':True and 'lstsq':True "
