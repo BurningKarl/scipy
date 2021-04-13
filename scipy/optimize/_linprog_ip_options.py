@@ -41,6 +41,9 @@ class LinearSolverOptions:
         Cholesky decomposition followed by explicit forward/backward
         substitution. This is typically faster for problems
         that are numerically well-behaved.
+    iterative : bool (default = False)
+        Set to ``True`` if the normal equations are to be solved by an iterative
+        method. Depending on the value of sym_pos either CG or GMRES is used.
     permc_spec : str (default = 'MMD_AT_PLUS_A')
         (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
         True``, and no SuiteSparse.)
@@ -135,6 +138,9 @@ class IpmOptions:
         Cholesky decomposition followed by explicit forward/backward
         substitution. This is typically faster for problems
         that are numerically well-behaved.
+    iterative : bool (default = False)
+        Set to ``True`` if the normal equations are to be solved by an iterative
+        method. Depending on the value of sym_pos either CG or GMRES is used.
     pc : bool (default = True)
         Leave ``True`` if the predictor-corrector method of Mehrota is to be
         used. This is almost always (if not always) beneficial.
