@@ -534,15 +534,18 @@ def _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj, header=False):
               "Path Parameter     ",
               "Objective          ")
 
-    # no clue why this works
-    fmt = '{0:<20.13}{1:<20.13}{2:<20.13}{3:<17.13}{4:<20.13}{5:<20.13}'
-    print(fmt.format(
-        float(rho_p),
-        float(rho_d),
-        float(rho_g),
-        alpha if isinstance(alpha, str) else float(alpha),
-        float(rho_mu),
-        float(obj)))
+    print(
+        f"{rho_p:011.5E}         "
+        + f"{rho_d:011.5E}         "
+        + f"{rho_g:011.5E}         "
+        + (
+            f"{alpha:011.5E}      "
+            if isinstance(alpha, float)
+            else f"{alpha:<17}"
+        )
+        + f"{rho_mu:011.5E}         "
+        + f"{obj:011.5E}         "
+    )
 
 
 def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
