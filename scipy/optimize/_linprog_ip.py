@@ -45,14 +45,15 @@ except ImportError:
     has_umfpack = False
 
 
-def _get_solver(M, options):
+def _get_solver(A, Dinv, options):
     """
     Given solver options, return a handle to the appropriate linear system
     solver.
 
     Parameters
     ----------
-    M : 2-D array
+    A : 2-D array
+    Dinv : 2-D array
         As defined in [4] Equation 8.31
     options: LinearSolverOptions
         Provides the options to choose the linear solver.
@@ -63,6 +64,12 @@ def _get_solver(M, options):
         Handle to the appropriate solver function
 
     """
+
+    if options.sparse:
+        M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
+    else:
+        M = A.dot(Dinv.reshape(-1, 1) * A.T)
+
     try:
         if options.sparse:
             if options.lstsq:
@@ -161,14 +168,9 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
     r_G = c.dot(x) - b.transpose().dot(y) + kappa
     mu = (x.dot(z) + tau * kappa) / (n_x + 1)
 
-    #  Assemble M from [4] Equation 8.31
+    #  Assemble M from [4] Equation 8.31 inside _get_solver
     Dinv = x / z
-
-    if options.solver_options.sparse:
-        M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
-    else:
-        M = A.dot(Dinv.reshape(-1, 1) * A.T)
-    solve = _get_solver(M, options.solver_options)
+    solve = _get_solver(A, Dinv, options.solver_options)
 
     # pc: "predictor-corrector" [4] Section 4.1
     # In development this option could be turned off
