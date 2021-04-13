@@ -2,14 +2,11 @@
 Configuration options for the interior-point method
 """
 
-import dataclasses
 import enum
-import itertools
-import json
-import typing
 import warnings
+from dataclasses import dataclass, field, fields
 
-from .optimize import OptimizeWarning
+from .optimize import OptimizeWarning, _check_unknown_options
 
 
 class PreconditioningMethod(enum.Enum):
@@ -18,7 +15,7 @@ class PreconditioningMethod(enum.Enum):
     SKETCHING_CHOLESKY = "sketching_cholesky"
 
 
-@dataclasses.dataclass
+@dataclass
 class PreconditioningOptions:
     """
     Stores all options for determining left and right preconditioners for the
@@ -43,12 +40,18 @@ class PreconditioningOptions:
         sketch is used (``sparse`` = True).
     """
 
-    method: PreconditioningMethod
-    sketching_factor: float
-    sketching_sparsity: int
+    preconditioning_method: PreconditioningMethod = PreconditioningMethod.NONE
+    sketching_factor: float = 2
+    sketching_sparsity: int = 3
+
+    def __post_init__(self):
+        if isinstance(self.preconditioning_method, str):
+            self.preconditioning_method = PreconditioningMethod(
+                self.preconditioning_method
+            )
 
 
-@dataclasses.dataclass
+@dataclass
 class LinearSolverOptions:
     """
     Stores all options for determining the solver for the normal equation.
@@ -101,21 +104,18 @@ class LinearSolverOptions:
         interior point algorithm; test different values to determine which
         performs best for your problem. For more information, refer to
         ``scipy.sparse.linalg.splu``.
-    preconditioning_options:
-        Stores preconditioning options.
     """
 
-    sparse: bool
-    lstsq: bool
-    sym_pos: bool
-    cholesky: bool
-    iterative: bool
-    linear_operators: bool
-    permc_spec: str
-    preconditioning_options: PreconditioningOptions
+    sparse: bool = False
+    lstsq: bool = False
+    sym_pos: bool = True
+    cholesky: bool = True
+    iterative: bool = False
+    linear_operators: bool = False
+    permc_spec: str = "MMD_AT_PLUS_A"
 
 
-@dataclasses.dataclass
+@dataclass
 class SearchDirectionOptions:
     """
     Stores all options for determining the search direction in each iteration
@@ -130,22 +130,51 @@ class SearchDirectionOptions:
         Set to ``True`` if the improved initial point suggestion due to [4]_
         Section 4.3 is desired. Whether this is beneficial or not
         depends on the problem.
-    solver_options: LinearSolverOptions
-        Stores solver options.
     """
 
-    pc: bool
-    ip: bool
-    solver_options: LinearSolverOptions
+    pc: bool = True
+    ip: bool = False
 
 
-@dataclasses.dataclass
+@dataclass
 class IpmOptions:
+    """
+    Stores all options for the main IPM loop.
+
+    Attributes
+    ----------
+    maxiter : int (default = 1000)
+        The maximum number of iterations of the algorithm.
+    tol : float (default = 1e-8)
+        Termination tolerance to be used for all termination criteria;
+        see [4]_ Section 4.5.
+    disp : bool (default = False)
+        Set to ``True`` if indicators of optimization status are to be printed
+        to the console each iteration.
+    alpha0 : float (default = 0.99995)
+        The maximal step size for Mehrota's predictor-corrector search
+        direction; see :math:`\beta_{3}` of [4]_ Table 8.1.
+    beta : float (default = 0.1)
+        The desired reduction of the path parameter :math:`\mu` (see [6]_)
+        when Mehrota's predictor-corrector is not in use (uncommon).
+    """
+    maxiter: int = 1000
+    tol: float = 1e-8
+    disp: bool = False
+    alpha0: float = 0.99995
+    beta: float = 0.1
+
+
+
+@dataclass
+class AllOptions:
     """
     Stores all options for the interior-point method
 
     Attributes
     ----------
+    All of these attributes can be supplied via the from_dict method.
+
     maxiter : int (default = 1000)
         The maximum number of iterations of the algorithm.
     tol : float (default = 1e-8)
@@ -230,34 +259,35 @@ class IpmOptions:
         sketch is used (i.e. if ``sparse`` = True).
     """
 
-    maxiter: int = 1000
-    tol: float = 1e-8
-    disp: bool = False
-    alpha0: float = 0.99995
-    beta: float = 0.1
-    sparse: bool = False
-    lstsq: bool = False
-    sym_pos: bool = True
-    cholesky: bool = True
-    iterative: bool = False
-    linear_operators: bool = False
-    pc: bool = True
-    ip: bool = False
-    permc_spec: str = "MMD_AT_PLUS_A"
-    preconditioning_method: str = "none"
-    sketching_factor: float = 2
-    sketching_sparsity: int = 3
-    search_direction_options: SearchDirectionOptions = dataclasses.field(
-        init=False
-    )
+    ipm: IpmOptions = field(default_factory=IpmOptions)
+    search_direction: SearchDirectionOptions = field(default_factory=SearchDirectionOptions)
+    linear_solver: LinearSolverOptions = field(default_factory=LinearSolverOptions)
+    preconditioning: PreconditioningOptions = field(default_factory=PreconditioningOptions)
 
-    @classmethod
-    def all_options(cls):
-        return set(field.name for field in dataclasses.fields(cls))
+    @staticmethod
+    def from_dict(options_dict, has_umfpack=False, has_cholmod=False):
+        options = AllOptions(
+            **{
+                suboptions.name: suboptions.default_factory(
+                    **{
+                        f.name: options_dict.pop(f.name)
+                        for f in fields(suboptions.default_factory)
+                        if f.name in options_dict
+                    }
+                )
+                for suboptions in fields(AllOptions)
+            }
+        )
 
-    def validate(self, has_umfpack, has_cholmod):
+        # Any entries left in options_dict are unknown options
+        _check_unknown_options(options_dict)
+
         # These should be warnings, not errors
-        if self.cholesky and self.sparse and not has_cholmod:
+        if (
+            options.linear_solver.cholesky
+            and options.linear_solver.sparse
+            and not has_cholmod
+        ):
             warnings.warn(
                 "Sparse cholesky is only available with scikit-sparse. "
                 "Dense cholesky will be used.",
@@ -265,7 +295,7 @@ class IpmOptions:
                 stacklevel=4,
             )
 
-        if self.sparse and self.lstsq:
+        if options.linear_solver.sparse and options.linear_solver.lstsq:
             warnings.warn(
                 "Option combination 'sparse':True and 'lstsq':True is not "
                 "recommended.",
@@ -273,7 +303,7 @@ class IpmOptions:
                 stacklevel=4,
             )
 
-        if self.lstsq and self.cholesky:
+        if options.linear_solver.lstsq and options.linear_solver.cholesky:
             warnings.warn(
                 "Invalid option combination 'lstsq':True and 'cholesky':True; "
                 "option 'cholesky' has no effect when 'lstsq' is set True.",
@@ -281,7 +311,7 @@ class IpmOptions:
                 stacklevel=4,
             )
 
-        if self.iterative and self.cholesky:
+        if options.linear_solver.iterative and options.linear_solver.cholesky:
             warnings.warn(
                 "Invalid option combination 'iterative':True and "
                 "'cholesky':True; option 'cholesky' has no effect when "
@@ -290,7 +320,7 @@ class IpmOptions:
                 stacklevel=4,
             )
 
-        if self.iterative and self.lstsq:
+        if options.linear_solver.iterative and options.linear_solver.lstsq:
             warnings.warn(
                 "Invalid option combination 'iterative':True and 'lstsq':True; "
                 "option 'lstsq' has no effect when 'iterative' is set True.",
@@ -298,7 +328,10 @@ class IpmOptions:
                 stacklevel=4,
             )
 
-        if self.linear_operators and not self.iterative:
+        if (
+            options.linear_solver.linear_operators
+            and not options.linear_solver.iterative
+        ):
             warnings.warn(
                 "Invalid option combination 'linear_operators':True and "
                 "'iterative':False; option 'linear_operators' has no effect "
@@ -308,7 +341,7 @@ class IpmOptions:
             )
 
         valid_permc_spec = ("NATURAL", "MMD_ATA", "MMD_AT_PLUS_A", "COLAMD")
-        if self.permc_spec.upper() not in valid_permc_spec:
+        if options.linear_solver.permc_spec.upper() not in valid_permc_spec:
             warnings.warn(
                 "Invalid permc_spec option: '" + str(self.permc_spec) + "'. "
                 "Acceptable values are 'NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', "
@@ -316,35 +349,20 @@ class IpmOptions:
                 OptimizeWarning,
                 stacklevel=4,
             )
-            self.permc_spec = "MMD_AT_PLUS_A"
+            options.linear_solver.permc_spec = "MMD_AT_PLUS_A"
 
         # This can be an error
-        if not self.sym_pos and self.cholesky:
+        if not options.linear_solver.sym_pos and options.linear_solver.cholesky:
             raise ValueError(
                 "Invalid option combination 'sym_pos':False "
                 "and 'cholesky':True: Cholesky decomposition is only possible "
                 "for symmetric positive definite matrices."
             )
 
-        self.cholesky = self.cholesky or (
-            self.cholesky is None and self.sym_pos and not self.lstsq
+        options.linear_solver.cholesky = options.linear_solver.cholesky or (
+            options.linear_solver.cholesky is None
+            and options.linear_solver.sym_pos
+            and not options.linear_solver.lstsq
         )
 
-        self.search_direction_options = SearchDirectionOptions(
-            pc=self.pc,
-            ip=self.ip,
-            solver_options=LinearSolverOptions(
-                sparse=self.sparse,
-                lstsq=self.lstsq,
-                sym_pos=self.sym_pos,
-                cholesky=self.cholesky,
-                iterative=self.iterative,
-                linear_operators=self.linear_operators,
-                permc_spec=self.permc_spec,
-                preconditioning_options=PreconditioningOptions(
-                    method=PreconditioningMethod(self.preconditioning_method),
-                    sketching_factor=self.sketching_factor,
-                    sketching_sparsity=self.sketching_sparsity,
-                ),
-            ),
-        )
+        return options

@@ -23,14 +23,11 @@ import scipy as sp
 import scipy.sparse as sps
 from warnings import warn
 from scipy.linalg import LinAlgError
-from .optimize import OptimizeWarning, OptimizeResult, _check_unknown_options
+from .optimize import OptimizeWarning, OptimizeResult
 from ._linprog_util import _postsolve
 from ._linprog_ip_options import (
-    IpmOptions,
-    SearchDirectionOptions,
+    AllOptions,
     LinearSolverOptions,
-    PreconditioningOptions,
-    PreconditioningMethod,
 )
 
 has_umfpack = True
@@ -57,7 +54,7 @@ def _get_solver(A, Dinv, options):
     A : 2-D array
     Dinv : 2-D array
         As defined in [4] Equation 8.31
-    options: LinearSolverOptions
+    options : AllOptions
         Provides the options to choose the linear solver.
 
     Returns
@@ -67,19 +64,19 @@ def _get_solver(A, Dinv, options):
 
     """
 
-    if options.linear_operators:
+    if options.linear_solver.linear_operators:
         A_op = sps.linalg.aslinearoperator(A)
         Dinv_op = sps.linalg.aslinearoperator(sps.diags(Dinv, 0, format="csc"))
         M = A_op * Dinv_op * A_op.T
     else:
-        if options.sparse:
+        if options.linear_solver.sparse:
             M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
         else:
             M = A.dot(Dinv.reshape(-1, 1) * A.T)
 
     try:
-        if options.iterative:
-            if options.sym_pos:
+        if options.linear_solver.iterative:
+            if options.linear_solver.sym_pos:
 
                 def solve(r):
                     x, info = sps.linalg.cg(
@@ -101,13 +98,13 @@ def _get_solver(A, Dinv, options):
                     else:
                         return x
 
-        elif options.sparse:
-            if options.lstsq:
+        elif options.linear_solver.sparse:
+            if options.linear_solver.lstsq:
 
                 def solve(r, sym_pos=False):
                     return sps.linalg.lsqr(M, r)[0]
 
-            elif options.cholesky:
+            elif options.linear_solver.cholesky:
                 if has_cholmod:
                     try:
                         # Will raise an exception in the first call,
@@ -124,20 +121,21 @@ def _get_solver(A, Dinv, options):
                         return sp.linalg.cho_solve(L, r)
 
             else:
-                if has_umfpack and options.sym_pos:
+                if has_umfpack and options.linear_solver.sym_pos:
                     solve = sps.linalg.factorized(M)
                 else:  # factorized doesn't pass permc_spec
                     solve = sps.linalg.splu(
-                        M, permc_spec=options.permc_spec
+                        M, permc_spec=options.linear_solver.permc_spec
                     ).solve
 
         else:
-            if options.lstsq:  # sometimes necessary as solution is approached
+            if options.linear_solver.lstsq:
+                # sometimes necessary as solution is approached
 
                 def solve(r):
                     return sp.linalg.lstsq(M, r)[0]
 
-            elif options.cholesky:
+            elif options.linear_solver.cholesky:
                 L = sp.linalg.cho_factor(M)
 
                 def solve(r):
@@ -146,7 +144,7 @@ def _get_solver(A, Dinv, options):
             else:
                 # this seems to cache the matrix factorization, so solving
                 # with multiple right hand sides is much faster
-                def solve(r, sym_pos=options.sym_pos):
+                def solve(r, sym_pos=options.linear_solver.sym_pos):
                     return sp.linalg.solve(M, r, sym_pos=sym_pos)
 
     # There are many things that can go wrong here, and it's hard to say
@@ -172,7 +170,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
     Parameters
     ----------
     As defined in [4], except:
-    options: SearchDirectionOptions
+    options : AllOptions
         Provides the options used to determine the search direction.
 
     Returns
@@ -190,15 +188,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
     if A.shape[0] == 0:
         # If there are no constraints, some solvers fail (understandably)
         # rather than returning empty solution. This gets the job done.
-        options.solver_options = LinearSolverOptions(
-            sparse=False,
-            lstsq=False,
-            sym_pos=True,
-            cholesky=False,
-            iterative=False,
-            linear_operators=False,
-            permc_spec=options.solver_options.permc_spec,
-        )
+        options.linear_solver = LinearSolverOptions()
+
     n_x = len(x)
 
     # [4] Equation 8.8
@@ -209,12 +200,12 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
 
     #  Assemble M from [4] Equation 8.31 inside _get_solver
     Dinv = x / z
-    solve = _get_solver(A, Dinv, options.solver_options)
+    solve = _get_solver(A, Dinv, options)
 
     # pc: "predictor-corrector" [4] Section 4.1
     # In development this option could be turned off
     # but it always seems to improve performance substantially
-    n_corrections = 1 if options.pc else 0
+    n_corrections = 1 if options.search_direction.pc else 0
 
     alpha, d_x, d_z, d_tau, d_kappa = 0, 0, 0, 0, 0
     for i in range(n_corrections + 1):
@@ -228,14 +219,16 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
         rhattk = gamma * mu - tau * kappa
 
         if i == 1:
-            if options.ip:  # if the correction is to get "initial point"
+            if options.search_direction.ip:
+                # if the correction is to get "initial point"
                 # Reference [4] Eq. 8.23
                 rhatxs = ((1 - alpha) * gamma * mu -
                           x * z - alpha**2 * d_x * d_z)
                 rhattk = ((1 - alpha) * gamma * mu -
                     tau * kappa -
                     alpha**2 * d_tau * d_kappa)
-            else:  # if the correction is for "predictor-corrector"
+            else:
+                # if the correction is for "predictor-corrector"
                 # Reference [4] Eq. 8.13
                 rhatxs -= d_x * d_z
                 rhattk -= d_tau * d_kappa
@@ -267,9 +260,9 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                 # Usually this doesn't happen. If it does, it happens when
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
-                if options.solver_options.iterative:
-                    options.solver_options.iterative = False
-                    options.solver_options.linear_operators = False
+                if options.linear_solver.iterative:
+                    options.linear_solver.iterative = False
+                    options.linear_solver.linear_operators = False
                     warn(
                         "Solving system with option 'iterative':True "
                         "failed. It is normal for this to happen "
@@ -277,8 +270,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         "approached. However, if you see this frequently, "
                         "consider setting option 'iterative' to False.",
                         OptimizeWarning, stacklevel=5)
-                elif options.solver_options.cholesky:
-                    options.solver_options.cholesky = False
+                elif options.linear_solver.cholesky:
+                    options.linear_solver.cholesky = False
                     warn(
                         "Solving system with option 'cholesky':True "
                         "failed. It is normal for this to happen "
@@ -286,8 +279,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         "approached. However, if you see this frequently, "
                         "consider setting option 'cholesky' to False.",
                         OptimizeWarning, stacklevel=5)
-                elif options.solver_options.sym_pos:
-                    options.solver_options.sym_pos = False
+                elif options.linear_solver.sym_pos:
+                    options.linear_solver.sym_pos = False
                     warn(
                         "Solving system with option 'sym_pos':True "
                         "failed. It is normal for this to happen "
@@ -295,8 +288,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         "approached. However, if you see this frequently, "
                         "consider setting option 'sym_pos' to False.",
                         OptimizeWarning, stacklevel=5)
-                elif not options.solver_options.lstsq:
-                    options.solver_options.lstsq = True
+                elif not options.linear_solver.lstsq:
+                    options.linear_solver.lstsq = True
                     warn(
                         "Solving system with option 'sym_pos':False "
                         "failed. This may happen occasionally, "
@@ -309,7 +302,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         OptimizeWarning, stacklevel=5)
                 else:
                     raise e
-                solve = _get_solver(A, Dinv, options.solver_options)
+                solve = _get_solver(A, Dinv, options)
         # [4] Results after 8.29
         d_tau = ((rhatg + 1 / tau * rhattk - (-c.dot(u) + b.dot(v))) /
                  (1 / tau * kappa + (-c.dot(p) + b.dot(q))))
@@ -322,7 +315,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
 
         # [4] 8.12 and "Let alpha be the maximal possible step..." before 8.23
         alpha = _get_step(x, d_x, z, d_z, tau, d_tau, kappa, d_kappa, 1)
-        if options.ip:  # initial point - see [4] 4.4
+        if options.search_direction.ip:  # initial point - see [4] 4.4
             gamma = 10
         else:  # predictor-corrector, [4] definition after 8.12
             beta1 = 0.1  # [4] pg. 220 (Table 8.1)
@@ -614,9 +607,8 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
     postsolve_args : tuple
         Data needed by _postsolve to convert the solution to the standard-form
         problem into the solution to the original problem.
-
-    options : IpmOptions
-        Provides all solver options.
+    options : AllOptions
+        Provides all options.
 
     Returns
     -------
@@ -655,14 +647,20 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
     x, y, z, tau, kappa = _get_blind_start(A.shape)
 
     # first iteration is special improvement of initial point
-    options.ip = options.ip if options.pc else False
+    options.search_direction.ip = (
+        options.search_direction.ip if options.search_direction.pc else False
+    )
 
     # [4] 4.5
     rho_p, rho_d, rho_A, rho_g, rho_mu, obj = _indicators(
         A, b, c, c0, x, y, z, tau, kappa)
-    go = rho_p > options.tol or rho_d > options.tol or rho_A > options.tol
+    go = (
+        rho_p > options.ipm.tol
+        or rho_d > options.ipm.tol
+        or rho_A > options.ipm.tol
+    )
 
-    if options.disp:
+    if options.ipm.disp:
         _display_iter(rho_p, rho_d, rho_g, "-", rho_mu, obj, header=True)
     if callback is not None:
         x_o, fun, slack, con = _postsolve(x/tau, postsolve_args)
@@ -675,7 +673,7 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
     status = 0
     message = "Optimization terminated successfully."
 
-    if options.sparse:
+    if options.linear_solver.sparse:
         A = sps.csc_matrix(A)
         A.T = A.transpose()  # A.T is defined for sparse matrices but is slow
         # Redefine it to avoid calculating again
@@ -685,7 +683,7 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
 
         iteration += 1
 
-        if options.ip:  # initial point
+        if options.search_direction.ip:  # initial point
             # [4] Section 4.4
             gamma = 1
 
@@ -695,7 +693,11 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             # gamma = 0 in predictor step according to [4] 4.1
             # if predictor/corrector is off, use mean of complementarity [6]
             # 5.1 / [4] Below Figure 10-4
-            gamma = 0 if options.pc else options.beta * np.mean(z * x)
+            gamma = (
+                0
+                if options.search_direction.pc
+                else options.ipm.beta * np.mean(z * x)
+            )
             # [4] Section 4.1
 
             def eta(g=gamma):
@@ -704,11 +706,10 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
         try:
             # Solve [4] 8.6 and 8.7/8.13/8.23
             d_x, d_y, d_z, d_tau, d_kappa = _get_delta(
-                A, b, c, x, y, z, tau, kappa, gamma, eta,
-                options.search_direction_options
+                A, b, c, x, y, z, tau, kappa, gamma, eta, options
             )
 
-            if options.ip:  # initial point
+            if options.search_direction.ip:  # initial point
                 # [4] 4.4
                 # Formula after 8.23 takes a full step regardless if this will
                 # take it negative
@@ -720,11 +721,12 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
                 z[z < 1] = 1
                 tau = max(1, tau)
                 kappa = max(1, kappa)
-                options.ip = False  # done with initial point
+                options.search_direction.ip = False  # done with initial point
             else:
                 # [4] Section 4.3
                 alpha = _get_step(
-                    x, d_x, z, d_z, tau, d_tau, kappa, d_kappa, options.alpha0
+                    x, d_x, z, d_z, tau, d_tau, kappa, d_kappa,
+                    options.ipm.alpha0
                 )
                 # [4] Equation 8.9
                 x, y, z, tau, kappa = _do_step(
@@ -742,9 +744,13 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
         # [4] 4.5
         rho_p, rho_d, rho_A, rho_g, rho_mu, obj = _indicators(
             A, b, c, c0, x, y, z, tau, kappa)
-        go = rho_p > options.tol or rho_d > options.tol or rho_A > options.tol
+        go = (
+            rho_p > options.ipm.tol
+            or rho_d > options.ipm.tol
+            or rho_A > options.ipm.tol
+        )
 
-        if options.disp:
+        if options.ipm.disp:
             _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj)
         if callback is not None:
             x_o, fun, slack, con = _postsolve(x/tau, postsolve_args)
@@ -756,21 +762,24 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
 
         # [4] 4.5
         inf1 = (
-            rho_p < options.tol
-            and rho_d < options.tol
-            and rho_g < options.tol
-            and tau < options.tol * max(1, kappa)
+            rho_p < options.ipm.tol
+            and rho_d < options.ipm.tol
+            and rho_g < options.ipm.tol
+            and tau < options.ipm.tol * max(1, kappa)
         )
-        inf2 = rho_mu < options.tol and tau < options.tol * min(1, kappa)
+        inf2 = (
+            rho_mu < options.ipm.tol
+            and tau < options.ipm.tol * min(1, kappa)
+        )
         if inf1 or inf2:
             # [4] Lemma 8.4 / Theorem 8.3
-            if b.transpose().dot(y) > options.tol:
+            if b.transpose().dot(y) > options.ipm.tol:
                 status = 2
             else:  # elif c.T.dot(x) < tol: ? Probably not necessary.
                 status = 3
             message = _get_message(status)
             break
-        elif iteration >= options.maxiter:
+        elif iteration >= options.ipm.maxiter:
             status = 1
             message = _get_message(status)
             break
@@ -780,7 +789,7 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
     return x_hat, status, message, iteration
 
 
-def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
+def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options_dict):
     r"""
     Minimize a linear objective function subject to linear
     equality and non-negativity constraints using the interior point method
@@ -1062,16 +1071,11 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
 
     """
 
-    known_options = {
-        k: v for k, v in options.items() if k in IpmOptions.all_options()
-    }
-    unknown_options = {
-        k: v for k, v in options.items() if k not in IpmOptions.all_options()
-    }
-
-    _check_unknown_options(unknown_options)
-    options = IpmOptions(**known_options)
-    options.validate(has_umfpack=has_umfpack, has_cholmod=has_cholmod)
+    options = AllOptions.from_dict(
+        options_dict=options_dict,
+        has_umfpack=has_umfpack,
+        has_cholmod=has_cholmod,
+    )
 
     x, status, message, iteration = _ip_hsd(
         A, b, c, c0, callback, postsolve_args, options
