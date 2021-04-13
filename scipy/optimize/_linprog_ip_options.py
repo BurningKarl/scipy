@@ -44,6 +44,10 @@ class LinearSolverOptions:
     iterative : bool (default = False)
         Set to ``True`` if the normal equations are to be solved by an iterative
         method. Depending on the value of sym_pos either CG or GMRES is used.
+    linear_operators : bool (default = False)
+        Set to ``True`` if the iterative method should use linear operators to
+        compute products with the matrix in the normal equation lazily instead
+        of calculating the matrix in advance.
     permc_spec : str (default = 'MMD_AT_PLUS_A')
         (Has effect only with ``sparse = True``, ``lstsq = False``, ``sym_pos =
         True``, and no SuiteSparse.)
@@ -67,6 +71,7 @@ class LinearSolverOptions:
     sym_pos: bool
     cholesky: bool
     iterative: bool
+    linear_operators: bool
     permc_spec: str
 
 
@@ -141,6 +146,10 @@ class IpmOptions:
     iterative : bool (default = False)
         Set to ``True`` if the normal equations are to be solved by an iterative
         method. Depending on the value of sym_pos either CG or GMRES is used.
+    linear_operators : bool (default = False)
+        Set to ``True`` if the iterative method should use linear operators to
+        compute products with the matrix in the normal equation lazily instead
+        of calculating the matrix in advance.
     pc : bool (default = True)
         Leave ``True`` if the predictor-corrector method of Mehrota is to be
         used. This is almost always (if not always) beneficial.
@@ -176,6 +185,7 @@ class IpmOptions:
     sym_pos: bool = True
     cholesky: bool = True
     iterative: bool = False
+    linear_operators: bool = False
     pc: bool = True
     ip: bool = False
     permc_spec: str = "MMD_AT_PLUS_A"
@@ -194,6 +204,7 @@ class IpmOptions:
                 sym_pos=self.sym_pos,
                 cholesky=self.cholesky,
                 iterative=self.iterative,
+                linear_operators=self.linear_operators,
                 permc_spec=self.permc_spec,
             ),
         )

@@ -19,6 +19,7 @@ References
 # Author: Matt Haberland
 
 import numpy as np
+import pylops
 import scipy as sp
 import scipy.sparse as sps
 from warnings import warn
@@ -65,28 +66,59 @@ def _get_solver(A, Dinv, options):
 
     """
 
-    if options.sparse:
-        M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
+    if options.linear_operators:
+        A_op = sps.linalg.aslinearoperator(A)
+        Dinv_op = sps.linalg.aslinearoperator(sps.diags(Dinv, 0, format="csc"))
+        M = pylops.LinearOperator(A_op * Dinv_op * A_op.T)
     else:
-        M = A.dot(Dinv.reshape(-1, 1) * A.T)
+        if options.sparse:
+            M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
+        else:
+            M = A.dot(Dinv.reshape(-1, 1) * A.T)
 
     try:
         if options.iterative:
             if options.sym_pos:
+                if options.linear_operators:
 
-                def solve(r):
-                    x, info = sps.linalg.cg(M, r, tol=0, atol=1e-10)
-                    if info != 0:
-                        raise LinAlgError("CG failed!")
-                    return x
+                    def solve(r):
+                        x, iit, cost = pylops.optimization.solver.cg(
+                            M, r, x0=None, niter=1000, tol=1e-10
+                        )
+                        if iit == 1000:
+                            raise LinAlgError("CG failed!")
+                        else:
+                            return x
+
+                else:
+
+                    def solve(r):
+                        x, info = sps.linalg.cg(M, r, tol=0, atol=1e-10)
+                        if info != 0:
+                            raise LinAlgError("CG failed!")
+                        else:
+                            return x
 
             else:
+                if options.linear_operators:
 
-                def solve(r):
-                    x, info = sps.linalg.gmres(M, r, tol=0, atol=1e-10)
-                    if info != 0:
-                        raise LinAlgError("GMRES failed!")
-                    return x
+                    def solve(r):
+                        x, iit, cost = pylops.optimization.solver.lsqr(
+                            M, r, x0=None, niter=1000, atol=1e-10, btol=1e-10
+                        )
+                        if iit == 1000:
+                            raise LinAlgError("LSQR failed!")
+                        else:
+                            return x
+
+                else:
+
+                    def solve(r):
+                        x, info = sps.linalg.lsqr(M, r, tol=0, atol=1e-10)
+                        if info != 0:
+                            raise LinAlgError("GMRES failed!")
+                        else:
+                            return x
 
         elif options.sparse:
             if options.lstsq:
@@ -183,6 +215,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
             sym_pos=True,
             cholesky=False,
             iterative=False,
+            linear_operators=False,
             permc_spec=options.solver_options.permc_spec,
         )
     n_x = len(x)
@@ -255,6 +288,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                 # solution. If so, change solver.
                 if options.solver_options.iterative:
                     options.solver_options.iterative = False
+                    options.solver_options.linear_operators = False
                     warn(
                         "Solving system with option 'iterative':True "
                         "failed. It is normal for this to happen "
@@ -846,6 +880,10 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
             Set to ``True`` if the normal equations are to be solved by an
             iterative method. Depending on the value of sym_pos either CG or
             GMRES is used.
+        linear_operators : bool (default = False)
+            Set to ``True`` if the iterative method should use linear operators
+            to compute products with the matrix in the normal equation lazily
+            instead of calculating the matrix in advance.
         pc : bool (default = True)
             Leave ``True`` if the predictor-corrector method of Mehrota is to be
             used. This is almost always (if not always) beneficial.
@@ -1072,6 +1110,15 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
             "Invalid option combination 'iterative':True "
             "and 'lstsq':True; option 'lstsq' has no effect when "
             "'iterative' is set True.",
+            OptimizeWarning,
+            stacklevel=3,
+        )
+
+    if options.linear_operators and not options.iterative:
+        warn(
+            "Invalid option combination 'linear_operators':True and "
+            "'iterative':False; option 'linear_operators' has no effect when "
+            "'iterative' is set False.",
             OptimizeWarning,
             stacklevel=3,
         )
