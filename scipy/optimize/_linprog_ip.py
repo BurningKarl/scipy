@@ -30,6 +30,8 @@ from ._linprog_ip_options import (
     IpmOptions,
     SearchDirectionOptions,
     LinearSolverOptions,
+    PreconditioningOptions,
+    PreconditioningMethod,
 )
 
 has_umfpack = True
@@ -908,6 +910,21 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
             interior point algorithm; test different values to determine which
             performs best for your problem. For more information, refer to
             ``scipy.sparse.linalg.splu``.
+        sketching_method : str (default = 'none')
+            Specifies how the preconditioner is determined.
+            - ``none``: No preconditioning
+            - ``sketching_qr``: Preconditioners are determined using a QR
+              decomposition of a sketched matrix.
+            - ``sketching_cholesky``: Preconditioners are determined using a
+              Cholesky decomposition of a sketched matrix
+            Note that sketching will only work advantage if the coefficient
+            matrix has much more variables than constraints (m << n)
+        sketching_factor : float (default = 2)
+            Determines the size of the sketched matrix to be
+                ``sketching_factor * m`` x ``m`` matrix
+        sketching_sparsity : int (default = 3)
+            Determines the number of nonzero entries in each column if the a
+            sparse sketch is used (i.e. if ``sparse`` = True).
 
         A warning is issued for all unused options provided by the user.
 
@@ -1138,7 +1155,34 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
             "and 'cholesky':True: Cholesky decomposition is only possible "
             "for symmetric positive definite matrices.")
 
-    cholesky = options.cholesky or (
+    try:
+        preconditioning_method = PreconditioningMethod(
+            options.preconditioning_method
+        )
+    except ValueError:
+        raise ValueError(
+            "Invalid preconditioning_method option: "
+            + options.preconditioning_method
+            + ". Acceptable values are "
+            + str(list(PreconditioningMethod.__members__.keys()))
+            + ". Reverting to default."
+        )
+
+    if (
+        preconditioning_method
+        in [
+            PreconditioningMethod.SKETCHING_CHOLESKY,
+            PreconditioningMethod.SKETCHING_QR,
+        ]
+        and options.sketching_factor * A.shape[0] >= A.shape[1]
+    ):
+        raise ValueError(
+            "Sketching only makes sense if the sketched matrix is smaller than "
+            "the matrix itself. Consider turning sketching off or reducing "
+            "``sketching_factor``."
+        )
+
+    options.cholesky = options.cholesky or (
         options.cholesky is None and options.sym_pos and not options.lstsq
     )
 

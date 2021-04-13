@@ -11,6 +11,42 @@ import typing
 import numpy as np
 
 
+class PreconditioningMethod(enum.Enum):
+    NONE = "none"
+    SKETCHING_QR = "sketching_qr"
+    SKETCHING_CHOLESKY = "sketching_cholesky"
+
+
+@dataclasses.dataclass
+class PreconditioningOptions:
+    """
+    Stores all options for determining left and right preconditioners for the
+    m x n matrix in the normal equation.
+
+    Attributes
+    ----------
+    method : PreconditioningMethod (default = PreconditioningMethod.NONE)
+        Specifies how the preconditioner is determined.
+        - ``none``: No preconditioning
+        - ``sketching_qr``: Preconditioners are determined using a QR
+          decomposition of a sketched matrix.
+        - ``sketching_cholesky``: Preconditioners are determined using a
+          Cholesky decomposition of a sketched matrix
+        Note that sketching will only work advantage if the coefficient
+        matrix has much more variables than constraints (m << n)
+    sketching_factor : float (default = 2)
+        Determines the size of the sketched matrix to be
+            ``sketching_factor * m`` x ``m`` matrix
+    sketching_sparsity : int (default = 3)
+        Determines the number of nonzero entries in each column if the a sparse
+        sketch is used (``sparse`` = True).
+    """
+
+    method: PreconditioningMethod
+    sketching_factor: float
+    sketching_sparsity: int
+
+
 @dataclasses.dataclass
 class LinearSolverOptions:
     """
@@ -64,6 +100,8 @@ class LinearSolverOptions:
         interior point algorithm; test different values to determine which
         performs best for your problem. For more information, refer to
         ``scipy.sparse.linalg.splu``.
+    preconditioning_options:
+        Stores preconditioning options.
     """
 
     sparse: bool
@@ -73,6 +111,7 @@ class LinearSolverOptions:
     iterative: bool
     linear_operators: bool
     permc_spec: str
+    preconditioning_options: PreconditioningOptions
 
 
 @dataclasses.dataclass
@@ -173,6 +212,21 @@ class IpmOptions:
         interior point algorithm; test different values to determine which
         performs best for your problem. For more information, refer to
         ``scipy.sparse.linalg.splu``.
+    sketching_method : str (default = 'none')
+        Specifies how the preconditioner is determined.
+        - ``none``: No preconditioning
+        - ``sketching_qr``: Preconditioners are determined using a QR
+          decomposition of a sketched matrix.
+        - ``sketching_cholesky``: Preconditioners are determined using a
+          Cholesky decomposition of a sketched matrix
+        Note that sketching will only work advantage if the coefficient
+        matrix has much more variables than constraints (m << n)
+    sketching_factor : float (default = 2)
+        Determines the size of the sketched matrix to be
+            ``sketching_factor * m`` x ``m`` matrix
+    sketching_sparsity : int (default = 3)
+        Determines the number of nonzero entries in each column if the a sparse
+        sketch is used (i.e. if ``sparse`` = True).
     """
 
     maxiter: int = 1000
@@ -189,6 +243,9 @@ class IpmOptions:
     pc: bool = True
     ip: bool = False
     permc_spec: str = "MMD_AT_PLUS_A"
+    preconditioning_method: str = "none"
+    sketching_factor: float = 2
+    sketching_sparsity: int = 3
 
     @classmethod
     def all_options(cls):
@@ -206,5 +263,10 @@ class IpmOptions:
                 iterative=self.iterative,
                 linear_operators=self.linear_operators,
                 permc_spec=self.permc_spec,
+                preconditioning_options=PreconditioningOptions(
+                    method=PreconditioningMethod(self.preconditioning_method),
+                    sketching_factor=self.sketching_factor,
+                    sketching_sparsity=self.sketching_sparsity,
+                ),
             ),
         )
