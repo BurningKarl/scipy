@@ -726,7 +726,7 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             # Solve [4] 8.6 and 8.7/8.13/8.23
             d_x, d_y, d_z, d_tau, d_kappa = _get_delta(
                 A, b, c, x, y, z, tau, kappa, gamma, eta,
-                options.search_direction_options()
+                options.search_direction_options
             )
 
             if options.ip:  # initial point
@@ -1092,99 +1092,7 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options):
 
     _check_unknown_options(unknown_options)
     options = IpmOptions(**known_options)
-
-    # These should be warnings, not errors
-    if options.cholesky and options.sparse and not has_cholmod:
-        warn(
-            "Sparse cholesky is only available with scikit-sparse. "
-            "Dense cholesky will be used.",
-            OptimizeWarning,
-            stacklevel=3,
-        )
-
-    if options.sparse and options.lstsq:
-        warn("Option combination 'sparse':True and 'lstsq':True "
-             "is not recommended.",
-             OptimizeWarning, stacklevel=3)
-
-    if options.lstsq and options.cholesky:
-        warn("Invalid option combination 'lstsq':True "
-             "and 'cholesky':True; option 'cholesky' has no effect when "
-             "'lstsq' is set True.",
-             OptimizeWarning, stacklevel=3)
-
-    if options.iterative and options.cholesky:
-        warn(
-            "Invalid option combination 'iterative':True "
-            "and 'cholesky':True; option 'cholesky' has no effect when "
-            "'iterative' is set True.",
-            OptimizeWarning,
-            stacklevel=3,
-        )
-
-    if options.iterative and options.lstsq:
-        warn(
-            "Invalid option combination 'iterative':True "
-            "and 'lstsq':True; option 'lstsq' has no effect when "
-            "'iterative' is set True.",
-            OptimizeWarning,
-            stacklevel=3,
-        )
-
-    if options.linear_operators and not options.iterative:
-        warn(
-            "Invalid option combination 'linear_operators':True and "
-            "'iterative':False; option 'linear_operators' has no effect when "
-            "'iterative' is set False.",
-            OptimizeWarning,
-            stacklevel=3,
-        )
-
-    valid_permc_spec = ('NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD')
-    if options.permc_spec.upper() not in valid_permc_spec:
-        warn("Invalid permc_spec option: '" + str(options.permc_spec) + "'. "
-             "Acceptable values are 'NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', "
-             "and 'COLAMD'. Reverting to default.",
-             OptimizeWarning, stacklevel=3)
-        options.permc_spec = 'MMD_AT_PLUS_A'
-
-    # This can be an error
-    if not options.sym_pos and options.cholesky:
-        raise ValueError(
-            "Invalid option combination 'sym_pos':False "
-            "and 'cholesky':True: Cholesky decomposition is only possible "
-            "for symmetric positive definite matrices.")
-
-    try:
-        preconditioning_method = PreconditioningMethod(
-            options.preconditioning_method
-        )
-    except ValueError:
-        raise ValueError(
-            "Invalid preconditioning_method option: "
-            + options.preconditioning_method
-            + ". Acceptable values are "
-            + str(list(PreconditioningMethod.__members__.keys()))
-            + ". Reverting to default."
-        )
-
-    if (
-        preconditioning_method
-        in [
-            PreconditioningMethod.SKETCHING_CHOLESKY,
-            PreconditioningMethod.SKETCHING_QR,
-        ]
-        and options.sketching_factor * A.shape[0] >= A.shape[1]
-    ):
-        raise ValueError(
-            "Sketching only makes sense if the sketched matrix is smaller than "
-            "the matrix itself. Consider turning sketching off or reducing "
-            "``sketching_factor``."
-        )
-
-    options.cholesky = options.cholesky or (
-        options.cholesky is None and options.sym_pos and not options.lstsq
-    )
+    options.validate(has_umfpack=has_umfpack, has_cholmod=has_cholmod)
 
     x, status, message, iteration = _ip_hsd(
         A, b, c, c0, callback, postsolve_args, options

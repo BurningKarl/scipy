@@ -7,8 +7,9 @@ import enum
 import itertools
 import json
 import typing
+import warnings
 
-import numpy as np
+from .optimize import OptimizeWarning
 
 
 class PreconditioningMethod(enum.Enum):
@@ -246,13 +247,90 @@ class IpmOptions:
     preconditioning_method: str = "none"
     sketching_factor: float = 2
     sketching_sparsity: int = 3
+    search_direction_options: SearchDirectionOptions = dataclasses.field(
+        init=False
+    )
 
     @classmethod
     def all_options(cls):
         return set(field.name for field in dataclasses.fields(cls))
 
-    def search_direction_options(self):
-        return SearchDirectionOptions(
+    def validate(self, has_umfpack, has_cholmod):
+        # These should be warnings, not errors
+        if self.cholesky and self.sparse and not has_cholmod:
+            warnings.warn(
+                "Sparse cholesky is only available with scikit-sparse. "
+                "Dense cholesky will be used.",
+                OptimizeWarning,
+                stacklevel=4,
+            )
+
+        if self.sparse and self.lstsq:
+            warnings.warn(
+                "Option combination 'sparse':True and 'lstsq':True is not "
+                "recommended.",
+                OptimizeWarning,
+                stacklevel=4,
+            )
+
+        if self.lstsq and self.cholesky:
+            warnings.warn(
+                "Invalid option combination 'lstsq':True and 'cholesky':True; "
+                "option 'cholesky' has no effect when 'lstsq' is set True.",
+                OptimizeWarning,
+                stacklevel=4,
+            )
+
+        if self.iterative and self.cholesky:
+            warnings.warn(
+                "Invalid option combination 'iterative':True and "
+                "'cholesky':True; option 'cholesky' has no effect when "
+                "'iterative' is set True.",
+                OptimizeWarning,
+                stacklevel=4,
+            )
+
+        if self.iterative and self.lstsq:
+            warnings.warn(
+                "Invalid option combination 'iterative':True and 'lstsq':True; "
+                "option 'lstsq' has no effect when 'iterative' is set True.",
+                OptimizeWarning,
+                stacklevel=4,
+            )
+
+        if self.linear_operators and not self.iterative:
+            warnings.warn(
+                "Invalid option combination 'linear_operators':True and "
+                "'iterative':False; option 'linear_operators' has no effect "
+                "when 'iterative' is set False.",
+                OptimizeWarning,
+                stacklevel=4,
+            )
+
+        valid_permc_spec = ("NATURAL", "MMD_ATA", "MMD_AT_PLUS_A", "COLAMD")
+        if self.permc_spec.upper() not in valid_permc_spec:
+            warnings.warn(
+                "Invalid permc_spec option: '" + str(self.permc_spec) + "'. "
+                "Acceptable values are 'NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', "
+                "and 'COLAMD'. Reverting to default.",
+                OptimizeWarning,
+                stacklevel=4,
+            )
+            self.permc_spec = "MMD_AT_PLUS_A"
+
+        # This can be an error
+        if not self.sym_pos and self.cholesky:
+            raise ValueError(
+                "Invalid option combination 'sym_pos':False "
+                "and 'cholesky':True: Cholesky decomposition is only possible "
+                "for symmetric positive definite matrices."
+            )
+
+        self.cholesky = self.cholesky or (
+            self.cholesky is None and self.sym_pos and not self.lstsq
+        )
+
+        self.search_direction_options = SearchDirectionOptions(
             pc=self.pc,
             ip=self.ip,
             solver_options=LinearSolverOptions(
