@@ -19,7 +19,6 @@ References
 # Author: Matt Haberland
 
 import numpy as np
-import pylops
 import scipy as sp
 import scipy.sparse as sps
 from warnings import warn
@@ -71,7 +70,7 @@ def _get_solver(A, Dinv, options):
     if options.linear_operators:
         A_op = sps.linalg.aslinearoperator(A)
         Dinv_op = sps.linalg.aslinearoperator(sps.diags(Dinv, 0, format="csc"))
-        M = pylops.LinearOperator(A_op * Dinv_op * A_op.T)
+        M = A_op * Dinv_op * A_op.T
     else:
         if options.sparse:
             M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
@@ -81,46 +80,26 @@ def _get_solver(A, Dinv, options):
     try:
         if options.iterative:
             if options.sym_pos:
-                if options.linear_operators:
 
-                    def solve(r):
-                        x, iit, cost = pylops.optimization.solver.cg(
-                            M, r, x0=None, niter=1000, tol=1e-10
-                        )
-                        if iit == 1000:
-                            raise LinAlgError("CG failed!")
-                        else:
-                            return x
-
-                else:
-
-                    def solve(r):
-                        x, info = sps.linalg.cg(M, r, tol=0, atol=1e-10)
-                        if info != 0:
-                            raise LinAlgError("CG failed!")
-                        else:
-                            return x
+                def solve(r):
+                    x, info = sps.linalg.cg(
+                        M, r, maxiter=1000, tol=0, atol=1e-10
+                    )
+                    if info != 0:
+                        raise LinAlgError(f"CG failed ({info})!")
+                    else:
+                        return x
 
             else:
-                if options.linear_operators:
 
-                    def solve(r):
-                        x, iit, cost = pylops.optimization.solver.lsqr(
-                            M, r, x0=None, niter=1000, atol=1e-10, btol=1e-10
-                        )
-                        if iit == 1000:
-                            raise LinAlgError("LSQR failed!")
-                        else:
-                            return x
-
-                else:
-
-                    def solve(r):
-                        x, info = sps.linalg.lsqr(M, r, tol=0, atol=1e-10)
-                        if info != 0:
-                            raise LinAlgError("GMRES failed!")
-                        else:
-                            return x
+                def solve(r):
+                    x, info = sps.linalg.gmres(
+                        M, r, maxiter=1000, tol=0, atol=1e-10
+                    )
+                    if info != 0:
+                        raise LinAlgError(f"GMRES failed ({info})!")
+                    else:
+                        return x
 
         elif options.sparse:
             if options.lstsq:
