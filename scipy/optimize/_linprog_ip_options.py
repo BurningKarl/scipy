@@ -11,8 +11,7 @@ from .optimize import OptimizeWarning, _check_unknown_options
 
 class PreconditioningMethod(enum.Enum):
     NONE = "none"
-    SKETCHING_QR = "sketching_qr"
-    SKETCHING_CHOLESKY = "sketching_cholesky"
+    SKETCHING = "sketching"
 
 
 @dataclass
@@ -23,15 +22,13 @@ class PreconditioningOptions:
 
     Attributes
     ----------
-    method : PreconditioningMethod (default = PreconditioningMethod.NONE)
+    preconditioning_method : str (default = 'none')
         Specifies how the preconditioner is determined.
         - ``none``: No preconditioning
-        - ``sketching_qr``: Preconditioners are determined using a QR
-          decomposition of a sketched matrix.
-        - ``sketching_cholesky``: Preconditioners are determined using a
-          Cholesky decomposition of a sketched matrix
-        Note that sketching will only work advantage if the coefficient
-        matrix has much more variables than constraints (m << n)
+        - ``sketching``: Preconditioners are determined using a decomposition of
+          a sketched matrix.
+        Note that sketching assumes that the coefficient matrix has much more
+        variables than constraints (m << n)
     sketching_factor : float (default = 2)
         Determines the size of the sketched matrix to be
             ``sketching_factor * m`` x ``m`` matrix
@@ -43,6 +40,7 @@ class PreconditioningOptions:
     preconditioning_method: PreconditioningMethod = PreconditioningMethod.NONE
     sketching_factor: float = 2
     sketching_sparsity: int = 3
+    triangular_solve: bool = False
 
     def __post_init__(self):
         if isinstance(self.preconditioning_method, str):
@@ -158,12 +156,12 @@ class IpmOptions:
         The desired reduction of the path parameter :math:`\mu` (see [6]_)
         when Mehrota's predictor-corrector is not in use (uncommon).
     """
+
     maxiter: int = 1000
     tol: float = 1e-8
     disp: bool = False
     alpha0: float = 0.99995
     beta: float = 0.1
-
 
 
 @dataclass
@@ -242,15 +240,13 @@ class AllOptions:
         interior point algorithm; test different values to determine which
         performs best for your problem. For more information, refer to
         ``scipy.sparse.linalg.splu``.
-    sketching_method : str (default = 'none')
+    preconditioning_method : str (default = 'none')
         Specifies how the preconditioner is determined.
         - ``none``: No preconditioning
-        - ``sketching_qr``: Preconditioners are determined using a QR
-          decomposition of a sketched matrix.
-        - ``sketching_cholesky``: Preconditioners are determined using a
-          Cholesky decomposition of a sketched matrix
-        Note that sketching will only work advantage if the coefficient
-        matrix has much more variables than constraints (m << n)
+        - ``sketching``: Preconditioners are determined using a decomposition of
+          a sketched matrix.
+        Note that sketching assumes that the coefficient matrix has much more
+        variables than constraints (m << n)
     sketching_factor : float (default = 2)
         Determines the size of the sketched matrix to be
             ``sketching_factor * m`` x ``m`` matrix
@@ -260,9 +256,13 @@ class AllOptions:
     """
 
     ipm: IpmOptions = field(default_factory=IpmOptions)
-    search_direction: SearchDirectionOptions = field(default_factory=SearchDirectionOptions)
+    search_direction: SearchDirectionOptions = field(
+        default_factory=SearchDirectionOptions
+    )
     linear_solver: LinearSolverOptions = field(default_factory=LinearSolverOptions)
-    preconditioning: PreconditioningOptions = field(default_factory=PreconditioningOptions)
+    preconditioning: PreconditioningOptions = field(
+        default_factory=PreconditioningOptions
+    )
 
     @staticmethod
     def from_dict(options_dict, has_umfpack=False, has_cholmod=False):

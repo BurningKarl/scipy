@@ -22,12 +22,13 @@ import numpy as np
 import scipy as sp
 import scipy.sparse as sps
 from warnings import warn
-from scipy.linalg import LinAlgError
+from scipy.linalg import LinAlgError, solve_triangular
 from .optimize import OptimizeWarning, OptimizeResult
 from ._linprog_util import _postsolve
 from ._linprog_ip_options import (
     AllOptions,
     LinearSolverOptions,
+    PreconditioningMethod,
 )
 
 has_umfpack = True
@@ -43,11 +44,51 @@ try:
 except ImportError:
     has_umfpack = False
 
+default_rng = np.random.default_rng()
 
-def _get_solver(A, Dinv, options):
+
+def _construct_sketching_matrix(w, n, s=3, sparse=True, rng=default_rng):
     """
-    Given solver options, return a handle to the appropriate linear system
-    solver.
+    Randomly construct a sketching matrix of size (w, n) where w is assumed to
+    be smaller than n. If sparse is True, each column contains (approximately)
+    s nonzero entries randomly drawn from +-1/sqrt(s). Otherwise all matrix
+    entries are drawn from a normal distribution.
+
+    Parameters
+    ----------
+    w : int
+        Number of rows of the sketching matrix
+    n : int
+        Number columns of the sketching matrix
+    s : int
+        Number of nonzero entries in each row if ``sparse = True``
+    sparse : bool
+        True if the sketching matrix should be sparse.
+    rng : np.random.Generator (default = np.random.default_rng())
+        A random number generator used to construct the random matrix
+
+    Returns
+    -------
+    A random sketching matrix
+
+    """
+    if sparse:
+        data = rng.choice([-1 / np.sqrt(s), 1 / np.sqrt(s)], size=s * n)
+        row_indices = rng.choice(w, size=n * s)
+        column_indices = np.repeat(np.arange(n), s)
+        mat = sps.coo_matrix(
+            (data, (row_indices, column_indices)), shape=(w, n)
+        )
+        return mat.tocsr()
+    else:
+        return rng.normal(size=(w, n)) / np.sqrt(w)
+
+
+def _assemble_matrix(A, Dinv, options):
+    """
+    Given the current linear system return a (possibly preconditioned) matrix
+    for which a solver is needed and a function to turn such a solver into a
+    solver for the matrix ``M = A * Dinv * A.T`` as defined in [4] Equation 8.31
 
     Parameters
     ----------
@@ -55,14 +96,17 @@ def _get_solver(A, Dinv, options):
     Dinv : 2-D array
         As defined in [4] Equation 8.31
     options : AllOptions
-        Provides the options to choose the linear solver.
+        Provides the options to choose the preconditioners.
 
     Returns
     -------
-    solve : function
-        Handle to the appropriate solver function
-
+    matrix: 2-D array
+        The preconditioned matrix
+    preconditioned_solver: function
+        A function decorator that takes in a solver function for the
+        preconditioned matrix and returns a solve function for ``M``.
     """
+    method = options.preconditioning.preconditioning_method
 
     if options.linear_solver.linear_operators:
         A_op = sps.linalg.aslinearoperator(A)
@@ -73,6 +117,67 @@ def _get_solver(A, Dinv, options):
             M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
         else:
             M = A.dot(Dinv.reshape(-1, 1) * A.T)
+
+    if method is PreconditioningMethod.NONE:
+        return M, lambda solve: solve
+    elif method is PreconditioningMethod.SKETCHING:
+        Dinv_half = np.sqrt(Dinv)
+        sketching_matrix = _construct_sketching_matrix(
+            int(options.preconditioning.sketching_factor * A.shape[0]),
+            A.shape[1],
+            options.preconditioning.sketching_sparsity,
+            sparse=options.linear_solver.sparse,
+        )
+        if options.linear_solver.sparse:
+            sketched_matrix = (
+                sketching_matrix @ sps.diags(Dinv_half, format="csc") @ A.T
+            ).toarray()
+        else:
+            sketched_matrix = sketching_matrix @ (
+                Dinv_half.reshape(-1, 1) * A.T
+            )
+        R = np.linalg.qr(sketched_matrix, mode="r")
+
+        if options.linear_solver.linear_operators:
+            if options.preconditioning.triangular_solve:
+                Rinv = sps.linalg.LinearOperator(
+                    R.shape,  # R is square
+                    matvec=lambda x: solve_triangular(R, x, trans="N"),
+                    rmatvec=lambda x: solve_triangular(R, x, trans="T"),
+                )
+            else:
+                Rinv = sps.linalg.aslinearoperator(np.linalg.inv(R))
+        else:
+            if options.linear_solver.sparse:
+                Rinv = sps.csc_matrix(np.linalg.inv(R))
+            else:
+                Rinv = np.linalg.inv(R)
+        matrix = Rinv.T @ M @ Rinv
+
+        def preconditioned_solver(solve):
+            return lambda r: Rinv @ solve(Rinv.T @ r)
+
+        return matrix, preconditioned_solver
+
+
+def _get_solver(M, options):
+    """
+    Given a matrix and solver options, return a handle to the appropriate linear
+    system solver.
+
+    Parameters
+    ----------
+    M : 2-D array
+        The matrix to be solved
+    options : AllOptions
+        Provides the options to choose the linear solver.
+
+    Returns
+    -------
+    solve : function
+        Handle to the appropriate solver function
+
+    """
 
     try:
         if options.linear_solver.iterative:
@@ -198,9 +303,10 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
     r_G = c.dot(x) - b.transpose().dot(y) + kappa
     mu = (x.dot(z) + tau * kappa) / (n_x + 1)
 
-    #  Assemble M from [4] Equation 8.31 inside _get_solver
+    #  Assemble M from [4] Equation 8.31 inside _assemble_matrix
     Dinv = x / z
-    solve = _get_solver(A, Dinv, options)
+    matrix, preconditioned_solver = _assemble_matrix(A, Dinv, options)
+    solve = preconditioned_solver(_get_solver(matrix, options))
 
     # pc: "predictor-corrector" [4] Section 4.1
     # In development this option could be turned off
@@ -262,7 +368,13 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                 # solution. If so, change solver.
                 if options.linear_solver.iterative:
                     options.linear_solver.iterative = False
-                    options.linear_solver.linear_operators = False
+                    if options.linear_solver.linear_operators:
+                        options.linear_solver.linear_operators = False
+                        # Non-iterative methods cant handle linear operators
+                        matrix, preconditioned_solver = _assemble_matrix(
+                            A, Dinv, options
+                        )
+
                     warn(
                         "Solving system with option 'iterative':True "
                         "failed. It is normal for this to happen "
@@ -302,7 +414,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         OptimizeWarning, stacklevel=5)
                 else:
                     raise e
-                solve = _get_solver(A, Dinv, options)
+                solve = _get_solver(matrix, options)
         # [4] Results after 8.29
         d_tau = ((rhatg + 1 / tau * rhattk - (-c.dot(u) + b.dot(v))) /
                  (1 / tau * kappa + (-c.dot(p) + b.dot(q))))
@@ -901,15 +1013,13 @@ def _linprog_ip(c, c0, A, b, callback, postsolve_args, **options_dict):
             interior point algorithm; test different values to determine which
             performs best for your problem. For more information, refer to
             ``scipy.sparse.linalg.splu``.
-        sketching_method : str (default = 'none')
+        preconditioning_method : str (default = 'none')
             Specifies how the preconditioner is determined.
             - ``none``: No preconditioning
-            - ``sketching_qr``: Preconditioners are determined using a QR
+            - ``sketching``: Preconditioners are determined using a
               decomposition of a sketched matrix.
-            - ``sketching_cholesky``: Preconditioners are determined using a
-              Cholesky decomposition of a sketched matrix
-            Note that sketching will only work advantage if the coefficient
-            matrix has much more variables than constraints (m << n)
+            Note that sketching assumes that the coefficient matrix has much more
+            variables than constraints (m << n)
         sketching_factor : float (default = 2)
             Determines the size of the sketched matrix to be
                 ``sketching_factor * m`` x ``m`` matrix
