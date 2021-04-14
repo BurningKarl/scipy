@@ -225,12 +225,16 @@ def _get_solver(M, options):
                 logger.debug("Using scipy.sparse.linalg.cg")
 
                 def solve(r):
-                    x, info = sps.linalg.cg(
+                    x, info, iterations, residual = sps.linalg.cg(
                         M,
                         r,
                         maxiter=1000,
                         tol=options.linear_solver.solver_rtol,
                         atol=options.linear_solver.solver_atol,
+                    )
+                    wandb.log(
+                        {"inner_iterations": iterations, "residual": residual},
+                        commit=False,
                     )
                     if info != 0:
                         raise LinAlgError(f"CG failed ({info})!")
@@ -241,12 +245,16 @@ def _get_solver(M, options):
                 logger.debug("Using scipy.sparse.linalg.gmres")
 
                 def solve(r):
-                    x, info = sps.linalg.gmres(
+                    x, info, iterations, residual = sps.linalg.gmres(
                         M,
                         r,
                         maxiter=1000,
                         tol=options.linear_solver.solver_rtol,
                         atol=options.linear_solver.solver_atol,
+                    )
+                    wandb.log(
+                        {"inner_iterations": iterations, "residual": residual},
+                        commit=False,
                     )
                     if info != 0:
                         raise LinAlgError(f"GMRES failed ({info})!")

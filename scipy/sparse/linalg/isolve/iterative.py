@@ -344,11 +344,7 @@ def cg(A, b, x0=None, tol=1e-5, maxiter=None, M=None, callback=None, atol=None):
                 resid, info = _stoptest(work[slice1], atol)
         ijob = 2
 
-    if info > 0 and iter_ == maxiter and not (resid <= atol):
-        # info isn't set appropriately otherwise
-        info = iter_
-
-    return postprocess(x), info
+    return postprocess(x), info, iter_, resid
 
 
 @set_docstring('Use Conjugate Gradient Squared iteration to solve ``Ax = b``.',
@@ -653,12 +649,8 @@ def gmres(A, b, x0=None, tol=1e-5, restart=None, maxiter=None, M=None, callback=
             if iter_num > maxiter:
                 info = maxiter
                 break
-
-    if info >= 0 and not (resid <= atol):
-        # info isn't set appropriately otherwise
-        info = maxiter
         
-    return postprocess(x), info
+    return postprocess(x), info, iter_num, resid
 
 
 @non_reentrant()
