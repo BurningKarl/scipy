@@ -186,7 +186,6 @@ def _assemble_matrix(A, Dinv, options):
             "rank": np.linalg.matrix_rank(dense_M),
             "rank_sketched": np.linalg.matrix_rank(dense_matrix),
         }
-        logger.info(f"{statistics}")
         wandb.log(statistics, commit=False)
 
         def preconditioned_solver(solve):
@@ -974,7 +973,6 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
                 ),
                 "solve_duration": Timer.timers.total("solve"),
             }
-            logger.info(statistics)
             wandb.log(statistics, commit=True)
             Timer.timers.clear()
 
