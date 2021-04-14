@@ -165,26 +165,24 @@ def _assemble_matrix(A, Dinv, options):
             matrix = Rinv.T @ M @ Rinv
 
         if options.linear_solver.linear_operators:
-            condition_number_sketched = np.linalg.cond(matrix @ np.eye(*matrix.shape))
+            dense_matrix = matrix @ np.eye(*matrix.shape)
+            dense_M = M @ np.eye(*M.shape)
         elif options.linear_solver.sparse:
-            condition_number_sketched = np.linalg.cond(matrix.toarray())
+            dense_matrix = matrix.toarray()
+            dense_M = M.toarray()
         else:
-            condition_number_sketched = np.linalg.cond(matrix)
-
-        if options.linear_solver.linear_operators:
-            condition_number = np.linalg.cond(M @ np.eye(*M.shape))
-        elif options.linear_solver.sparse:
-            condition_number = np.linalg.cond(M.toarray())
-        else:
-            condition_number = np.linalg.cond(M)
+            dense_matrix = matrix
+            dense_M = M
 
         statistics = {
             "generate_sketch_duration": generate_sketch_timer.last,
             "sketching_duration": sketching_timer.last,
             "decomposition_duration": decomposition_timer.last,
             "product_duration": product_timer.last,
-            "condition_number": condition_number,
-            "condition_number_sketched": condition_number_sketched,
+            "condition_number": np.linalg.cond(dense_M),
+            "condition_number_sketched": np.linalg.cond(dense_matrix),
+            "rank": np.linalg.matrix_rank(dense_M),
+            "rank_sketched": np.linalg.matrix_rank(dense_matrix),
         }
         logger.info(f"{statistics}")
         wandb.log(statistics, commit=False)
