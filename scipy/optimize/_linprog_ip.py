@@ -18,9 +18,11 @@ References
 """
 # Author: Matt Haberland
 
+import collections
 import numpy as np
 import scipy as sp
 import scipy.sparse as sps
+import scipy.stats as sts
 import wandb
 from codetiming import Timer
 from logzero import logger
@@ -232,8 +234,19 @@ def _get_solver(M, options):
                         tol=options.linear_solver.solver_rtol,
                         atol=options.linear_solver.solver_atol,
                     )
+                    if not hasattr(solve, "statistics"):
+                        solve.statistics = collections.defaultdict(list)
+                    solve.statistics["inner_iterations"].append(iterations)
+                    solve.statistics["residual"].append(residual)
                     wandb.log(
-                        {"inner_iterations": iterations, "residual": residual},
+                        {
+                            "inner_iterations": sum(
+                                solve.statistics["inner_iterations"]
+                            ),
+                            "residual": sts.gmean(
+                                solve.statistics["residual"]
+                            ),
+                        },
                         commit=False,
                     )
                     if info != 0:
@@ -252,8 +265,19 @@ def _get_solver(M, options):
                         tol=options.linear_solver.solver_rtol,
                         atol=options.linear_solver.solver_atol,
                     )
+                    if not hasattr(solve, "statistics"):
+                        solve.statistics = collections.defaultdict(list)
+                    solve.statistics["inner_iterations"].append(iterations)
+                    solve.statistics["residual"].append(residual)
                     wandb.log(
-                        {"inner_iterations": iterations, "residual": residual},
+                        {
+                            "inner_iterations": sum(
+                                solve.statistics["inner_iterations"]
+                            ),
+                            "residual": sts.gmean(
+                                solve.statistics["residual"]
+                            ),
+                        },
                         commit=False,
                     )
                     if info != 0:
