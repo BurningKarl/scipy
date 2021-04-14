@@ -111,6 +111,8 @@ class LinearSolverOptions:
     iterative: bool = False
     linear_operators: bool = False
     permc_spec: str = "MMD_AT_PLUS_A"
+    solver_rtol: float = 0
+    solver_atol: float = 1e-10
 
 
 @dataclass
@@ -343,7 +345,7 @@ class AllOptions:
         valid_permc_spec = ("NATURAL", "MMD_ATA", "MMD_AT_PLUS_A", "COLAMD")
         if options.linear_solver.permc_spec.upper() not in valid_permc_spec:
             warnings.warn(
-                "Invalid permc_spec option: '" + str(self.permc_spec) + "'. "
+                "Invalid permc_spec option: '" + str(options.linear_solver.permc_spec) + "'. "
                 "Acceptable values are 'NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', "
                 "and 'COLAMD'. Reverting to default.",
                 OptimizeWarning,

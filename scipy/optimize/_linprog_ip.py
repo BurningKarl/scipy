@@ -226,7 +226,11 @@ def _get_solver(M, options):
 
                 def solve(r):
                     x, info = sps.linalg.cg(
-                        M, r, maxiter=1000, tol=0, atol=1e-10
+                        M,
+                        r,
+                        maxiter=1000,
+                        tol=options.linear_solver.solver_rtol,
+                        atol=options.linear_solver.solver_atol,
                     )
                     if info != 0:
                         raise LinAlgError(f"CG failed ({info})!")
@@ -238,7 +242,11 @@ def _get_solver(M, options):
 
                 def solve(r):
                     x, info = sps.linalg.gmres(
-                        M, r, maxiter=1000, tol=0, atol=1e-10
+                        M,
+                        r,
+                        maxiter=1000,
+                        tol=options.linear_solver.solver_rtol,
+                        atol=options.linear_solver.solver_atol,
                     )
                     if info != 0:
                         raise LinAlgError(f"GMRES failed ({info})!")
