@@ -187,10 +187,17 @@ def _assemble_matrix(A, Dinv, options):
             "condition_number_sketched": condition_number_sketched,
         }
         logger.info(f"{statistics}")
-        wandb.log(statistics)
+        wandb.log(statistics, commit=False)
 
         def preconditioned_solver(solve):
-            return lambda r: Rinv @ solve(Rinv.T @ r)
+            def new_solve(r):
+                with Timer(name="preconditioned_solve", logger=None):
+                    new_r = Rinv.T @ r
+                    with Timer(name="solve", logger=None):
+                        new_x = solve(new_r)
+                    x = Rinv @ new_x
+                return x
+            return new_solve
 
         return matrix, preconditioned_solver
 
@@ -415,8 +422,7 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                 # there are redundant constraints or when approaching the
                 # solution. If so, change solver.
                 logger.error(e)
-                if not isinstance(e, LinAlgError):
-                    raise
+                raise
 
                 if options.linear_solver.iterative:
                     options.linear_solver.iterative = False
@@ -923,6 +929,16 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             status = 4
             message = _get_message(status)
             break
+        finally:
+            statistics = {
+                "preconditioned_solve_duration": Timer.timers.total(
+                    "preconditioned_solve"
+                ),
+                "solve_duration": Timer.timers.total("solve"),
+            }
+            logger.info(statistics)
+            wandb.log(statistics, commit=True)
+            Timer.timers.clear()
 
         # [4] 4.5
         rho_p, rho_d, rho_A, rho_g, rho_mu, obj = _indicators(
