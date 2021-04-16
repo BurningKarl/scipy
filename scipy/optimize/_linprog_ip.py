@@ -140,14 +140,19 @@ def _assemble_matrix(A, Dinv, options):
             if options.linear_solver.sparse:
                 sketched_matrix = (
                     sketching_matrix @ sps.diags(Dinv_half, format="csc") @ A.T
-                ).toarray()
+                )
             else:
                 sketched_matrix = sketching_matrix @ (
                     Dinv_half.reshape(-1, 1) * A.T
                 )
 
         with Timer(logger=None) as decomposition_timer:
-            R = np.linalg.qr(sketched_matrix, mode="r")
+            R = np.linalg.qr(
+                sketched_matrix.toarray()
+                if options.linear_solver.sparse
+                else sketched_matrix,
+                mode="r",
+            )
 
         with Timer(logger=None) as product_timer:
             if options.linear_solver.linear_operators:
@@ -186,6 +191,25 @@ def _assemble_matrix(A, Dinv, options):
             "rank": np.linalg.matrix_rank(dense_M),
             "rank_sketched": np.linalg.matrix_rank(dense_matrix),
         }
+        if options.linear_solver.sparse:
+            statistics["nnz_sketched"] = sketched_matrix.count_nonzero()
+            statistics["density_sketched"] = statistics["nnz_sketched"] / (
+                sketched_matrix.shape[0] * sketched_matrix.shape[1]
+            )
+            statistics["nnz_coefficient"] = A.count_nonzero()
+            statistics["density_coefficient"] = statistics[
+                "nnz_coefficient"
+            ] / (A.shape[0] * A.shape[1])
+            if not options.linear_solver.linear_operators:
+                statistics["nnz_M"] = M.count_nonzero()
+                statistics["density_M"] = statistics["nnz_M"] / (
+                    M.shape[0] * M.shape[1]
+                )
+                statistics["nnz_matrix"] = matrix.count_nonzero()
+                statistics["density_matrix"] = statistics["nnz_matrix"] / (
+                    matrix.shape[0] * matrix.shape[1]
+                )
+
         wandb.log(statistics, commit=False)
 
         def preconditioned_solver(solve):
@@ -961,8 +985,6 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             # is turned off. Also observed ValueError in AppVeyor Python 3.6
             # Win32 build (PR #8676). I've never seen it otherwise.
             logger.error(e)
-            raise
-
             status = 4
             message = _get_message(status)
             break
