@@ -124,7 +124,16 @@ def _assemble_matrix(A, Dinv, options):
             M = A.dot(Dinv.reshape(-1, 1) * A.T)
 
     if method is PreconditioningMethod.NONE:
-        return M, lambda solve: solve
+
+        def preconditioned_solver(solve):
+            def new_solve(r):
+                with Timer(name="solve", logger=None):
+                    x = solve(r)
+                return x
+
+            return new_solve
+
+        return M, preconditioned_solver
     elif method is PreconditioningMethod.SKETCHING:
         Dinv_half = np.sqrt(Dinv)
 
@@ -214,12 +223,12 @@ def _assemble_matrix(A, Dinv, options):
 
         def preconditioned_solver(solve):
             def new_solve(r):
-                with Timer(name="preconditioned_solve", logger=None):
-                    new_r = Rinv.T @ r
-                    with Timer(name="solve", logger=None):
-                        new_x = solve(new_r)
-                    x = Rinv @ new_x
+                new_r = Rinv.T @ r
+                with Timer(name="solve", logger=None):
+                    new_x = solve(new_r)
+                x = Rinv @ new_x
                 return x
+
             return new_solve
 
         return matrix, preconditioned_solver
@@ -990,9 +999,6 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             break
         finally:
             statistics = {
-                "preconditioned_solve_duration": Timer.timers.total(
-                    "preconditioned_solve"
-                ),
                 "solve_duration": Timer.timers.total("solve"),
             }
             wandb.log(statistics, commit=True)
