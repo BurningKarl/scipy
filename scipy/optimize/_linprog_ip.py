@@ -754,7 +754,6 @@ def _indicators(A, b, c, c0, x, y, z, tau, kappa):
             "rho_d": rho_d,
             "rho_g": rho_g,
             "rho_mu": rho_mu,
-            "mu": rho_mu * mu_0,
         },
         commit=False,
     )
@@ -928,6 +927,15 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
         or rho_A > options.ipm.tol
     )
 
+    best_iteration = 0
+    best_indicators = {
+        "rho_A": rho_A,
+        "rho_p": rho_p,
+        "rho_d": rho_d,
+        "rho_g": rho_g,
+        "rho_mu": rho_mu,
+    }
+    wandb.summary.update({"best_iteration": best_iteration, **best_indicators})
     if options.ipm.disp:
         _display_iter(rho_p, rho_d, rho_g, "-", rho_mu, obj, header=True)
     if callback is not None:
@@ -1025,6 +1033,18 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             or rho_A > options.ipm.tol
         )
 
+        if best_indicators["rho_p"] > rho_p:
+            best_iteration = iteration
+            best_indicators = {
+                "rho_A": rho_A,
+                "rho_p": rho_p,
+                "rho_d": rho_d,
+                "rho_g": rho_g,
+                "rho_mu": rho_mu,
+            }
+            wandb.summary.update(
+                {"best_iteration": best_iteration, **best_indicators}
+            )
         if options.ipm.disp:
             _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj)
         if callback is not None:
