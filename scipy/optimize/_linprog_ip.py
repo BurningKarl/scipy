@@ -52,7 +52,9 @@ except ImportError:
 default_rng = np.random.default_rng()
 
 
-def _construct_sketching_matrix(w, n, s=3, sparse=True, rng=default_rng):
+def _construct_sketching_matrix(
+    w, n, s=3, sparse=True, fast=False, rng=default_rng
+):
     """
     Randomly construct a sketching matrix of size (w, n) where w is assumed to
     be smaller than n. If sparse is True, each column contains (approximately)
@@ -79,7 +81,17 @@ def _construct_sketching_matrix(w, n, s=3, sparse=True, rng=default_rng):
     """
     if sparse:
         data = rng.choice([-1 / np.sqrt(s), 1 / np.sqrt(s)], size=s * n)
-        row_indices = rng.choice(w, size=n * s)
+        if fast:
+            row_indices = rng.choice(w, size=n * s)
+        else:
+            row_indices = rng.choice(w, size=(int(n * 1.1), s))
+            row_indices.sort()
+            row_indices = row_indices[
+                (row_indices[..., 1:] != row_indices[..., :-1]).all(axis=-1)
+            ]
+            row_indices = row_indices[:n]
+            row_indices.shape = (n * s,)
+
         column_indices = np.repeat(np.arange(n), s)
         mat = sps.coo_matrix(
             (data, (row_indices, column_indices)), shape=(w, n)
