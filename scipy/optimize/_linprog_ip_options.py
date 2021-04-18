@@ -113,6 +113,7 @@ class LinearSolverOptions:
     permc_spec: str = "MMD_AT_PLUS_A"
     solver_rtol: float = 0
     solver_atol: float = 1e-10
+    solver_maxiter: int = 1000
 
 
 @dataclass

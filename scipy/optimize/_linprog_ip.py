@@ -287,7 +287,7 @@ def _get_solver(M, options):
                     x, info, iterations, residual = sps.linalg.cg(
                         M,
                         r,
-                        maxiter=1000,
+                        maxiter=options.linear_solver.solver_maxiter,
                         tol=options.linear_solver.solver_rtol,
                         atol=options.linear_solver.solver_atol,
                     )
@@ -306,7 +306,7 @@ def _get_solver(M, options):
                         },
                         commit=False,
                     )
-                    if info != 0:
+                    if info < 0:
                         raise LinAlgError(f"CG failed ({info})!")
                     else:
                         return x
@@ -318,7 +318,7 @@ def _get_solver(M, options):
                     x, info, iterations, residual = sps.linalg.gmres(
                         M,
                         r,
-                        maxiter=1000,
+                        maxiter=options.linear_solver.solver_maxiter,
                         tol=options.linear_solver.solver_rtol,
                         atol=options.linear_solver.solver_atol,
                     )
@@ -337,7 +337,7 @@ def _get_solver(M, options):
                         },
                         commit=False,
                     )
-                    if info != 0:
+                    if info < 0:
                         raise LinAlgError(f"GMRES failed ({info})!")
                     else:
                         return x
