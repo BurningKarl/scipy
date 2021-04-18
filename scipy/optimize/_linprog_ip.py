@@ -192,19 +192,6 @@ def _assemble_matrix(A, Dinv, options):
                     Rinv.T @ (M.toarray() if sps.isspmatrix(M) else M) @ Rinv
                 )
 
-        if isinstance(matrix, sps.linalg.LinearOperator):
-            dense_matrix = matrix @ np.eye(*matrix.shape)
-        elif sps.isspmatrix(matrix):
-            dense_matrix = matrix.toarray()
-        else:
-            dense_matrix = matrix
-
-        if isinstance(M, sps.linalg.LinearOperator):
-            dense_M = M @ np.eye(*M.shape)
-        elif sps.isspmatrix(M):
-            dense_M = M.toarray()
-        else:
-            dense_M = M
 
         statistics = {
             "generate_sketch_duration": generate_sketch_timer.last,
@@ -212,6 +199,22 @@ def _assemble_matrix(A, Dinv, options):
             "decomposition_duration": decomposition_timer.last,
             "product_duration": product_timer.last,
         }
+        if (
+            options.linear_solver.log_conditioning_and_rank
+            or options.linear_solver.log_sparsity
+        ):
+            if isinstance(matrix, sps.linalg.LinearOperator):
+                dense_matrix = matrix @ np.eye(*matrix.shape)
+            elif sps.isspmatrix(matrix):
+                dense_matrix = matrix.toarray()
+            else:
+                dense_matrix = matrix
+            if isinstance(M, sps.linalg.LinearOperator):
+                dense_M = M @ np.eye(*M.shape)
+            elif sps.isspmatrix(M):
+                dense_M = M.toarray()
+            else:
+                dense_M = M
         if options.linear_solver.log_conditioning_and_rank:
             statistics.update({
                 "condition_number": np.linalg.cond(dense_M),
