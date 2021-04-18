@@ -239,6 +239,19 @@ def _assemble_matrix(A, Dinv, options):
                 with Timer(name="solve", logger=None):
                     new_x = solve(new_r)
                 x = Rinv @ new_x
+
+                if not hasattr(new_solve, "statistics"):
+                    new_solve.statistics = collections.defaultdict(list)
+                new_solve.statistics["residual_M"].append(np.linalg.norm(M @ x - r))
+                wandb.log(
+                    {
+                        "residual_M": sts.gmean(
+                            new_solve.statistics["residual_M"]
+                        ),
+                    },
+                    commit=False,
+                )
+
                 return x
 
             return new_solve
