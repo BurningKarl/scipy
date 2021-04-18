@@ -185,21 +185,25 @@ def _assemble_matrix(A, Dinv, options):
                     )
                 else:
                     Rinv = sps.linalg.aslinearoperator(np.linalg.inv(R))
+                matrix = Rinv.T @ M @ Rinv
             else:
-                if options.linear_solver.sparse:
-                    Rinv = sps.csc_matrix(np.linalg.inv(R))
-                else:
-                    Rinv = np.linalg.inv(R)
-            matrix = Rinv.T @ M @ Rinv
+                Rinv = np.linalg.inv(R)
+                matrix = (
+                    Rinv.T @ (M.toarray() if sps.isspmatrix(M) else M) @ Rinv
+                )
 
-        if options.linear_solver.linear_operators:
+        if isinstance(matrix, sps.linalg.LinearOperator):
             dense_matrix = matrix @ np.eye(*matrix.shape)
-            dense_M = M @ np.eye(*M.shape)
-        elif options.linear_solver.sparse:
+        elif sps.isspmatrix(matrix):
             dense_matrix = matrix.toarray()
-            dense_M = M.toarray()
         else:
             dense_matrix = matrix
+
+        if isinstance(M, sps.linalg.LinearOperator):
+            dense_M = M @ np.eye(*M.shape)
+        elif sps.isspmatrix(M):
+            dense_M = M.toarray()
+        else:
             dense_M = M
 
         statistics = {
@@ -211,25 +215,19 @@ def _assemble_matrix(A, Dinv, options):
             "condition_number_sketched": np.linalg.cond(dense_matrix),
             "rank": np.linalg.matrix_rank(dense_M),
             "rank_sketched": np.linalg.matrix_rank(dense_matrix),
+            "nnz_sketched": sketched_matrix.count_nonzero(),
+            "density_sketched": sketched_matrix.count_nonzero()
+            / (sketched_matrix.shape[0] * sketched_matrix.shape[1]),
+            "nnz_coefficient": A.count_nonzero(),
+            "density_coefficient": A.count_nonzero()
+            / (A.shape[0] * A.shape[1]),
+            "nnz_matrix": sps.coo_matrix(dense_matrix).count_nonzero(),
+            "density_matrix": sps.coo_matrix(dense_matrix).count_nonzero()
+            / (matrix.shape[0] * matrix.shape[1]),
+            "nnz_M": sps.coo_matrix(dense_M).count_nonzero(),
+            "density_M": sps.coo_matrix(dense_M).count_nonzero()
+            / (M.shape[0] * M.shape[1]),
         }
-        if options.linear_solver.sparse:
-            statistics["nnz_sketched"] = sketched_matrix.count_nonzero()
-            statistics["density_sketched"] = statistics["nnz_sketched"] / (
-                sketched_matrix.shape[0] * sketched_matrix.shape[1]
-            )
-            statistics["nnz_coefficient"] = A.count_nonzero()
-            statistics["density_coefficient"] = statistics[
-                "nnz_coefficient"
-            ] / (A.shape[0] * A.shape[1])
-            if not options.linear_solver.linear_operators:
-                statistics["nnz_M"] = M.count_nonzero()
-                statistics["density_M"] = statistics["nnz_M"] / (
-                    M.shape[0] * M.shape[1]
-                )
-                statistics["nnz_matrix"] = matrix.count_nonzero()
-                statistics["density_matrix"] = statistics["nnz_matrix"] / (
-                    matrix.shape[0] * matrix.shape[1]
-                )
 
         wandb.log(statistics, commit=False)
 
