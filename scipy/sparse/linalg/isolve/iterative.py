@@ -299,7 +299,8 @@ def cg(A, b, x0=None, tol=1e-5, maxiter=None, M=None, callback=None, atol=None):
     revcom = getattr(_iterative, ltr + 'cgrevcom')
 
     get_residual = lambda: np.linalg.norm(matvec(x) - b)
-    atol = _get_atol(tol, atol, np.linalg.norm(b), get_residual, 'cg')
+    bnorm = np.linalg.norm(b)
+    atol = _get_atol(tol, atol, bnorm, get_residual, 'cg')
     if atol == 'exit':
         return postprocess(x), 0
 
@@ -344,7 +345,7 @@ def cg(A, b, x0=None, tol=1e-5, maxiter=None, M=None, callback=None, atol=None):
                 resid, info = _stoptest(work[slice1], atol)
         ijob = 2
 
-    return postprocess(x), info, iter_, resid
+    return postprocess(x), info, iter_, resid / bnorm
 
 
 @set_docstring('Use Conjugate Gradient Squared iteration to solve ``Ax = b``.',
@@ -650,7 +651,7 @@ def gmres(A, b, x0=None, tol=1e-5, restart=None, maxiter=None, M=None, callback=
                 info = maxiter
                 break
         
-    return postprocess(x), info, iter_num, resid
+    return postprocess(x), info, iter_num, resid / bnrm2
 
 
 @non_reentrant()

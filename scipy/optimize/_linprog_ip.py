@@ -240,7 +240,9 @@ def _assemble_matrix(A, Dinv, options):
 
                 if not hasattr(new_solve, "statistics"):
                     new_solve.statistics = collections.defaultdict(list)
-                new_solve.statistics["residual_M"].append(np.linalg.norm(M @ x - r))
+                new_solve.statistics["residual_M"].append(
+                    np.linalg.norm(M @ x - r) / np.linalg.norm(r)
+                )
                 wandb.log(
                     {
                         f"residual_M[{i}]": v
