@@ -245,9 +245,10 @@ def _assemble_matrix(A, Dinv, options):
                 new_solve.statistics["residual_M"].append(np.linalg.norm(M @ x - r))
                 wandb.log(
                     {
-                        "residual_M": sts.gmean(
+                        f"residual_M[{i}]": v
+                        for i, v in enumerate(
                             new_solve.statistics["residual_M"]
-                        ),
+                        )
                     },
                     commit=False,
                 )
@@ -297,12 +298,18 @@ def _get_solver(M, options):
                     solve.statistics["residual"].append(residual)
                     wandb.log(
                         {
-                            "inner_iterations": sum(
-                                solve.statistics["inner_iterations"]
-                            ),
-                            "residual": sts.gmean(
-                                solve.statistics["residual"]
-                            ),
+                            **{
+                                f"inner_iterations[{i}]": v
+                                for i, v in enumerate(
+                                    solve.statistics["inner_iterations"]
+                                )
+                            },
+                            **{
+                                f"residual[{i}]": v
+                                for i, v in enumerate(
+                                    solve.statistics["residual"]
+                                )
+                            }
                         },
                         commit=False,
                     )
@@ -328,12 +335,18 @@ def _get_solver(M, options):
                     solve.statistics["residual"].append(residual)
                     wandb.log(
                         {
-                            "inner_iterations": sum(
-                                solve.statistics["inner_iterations"]
-                            ),
-                            "residual": sts.gmean(
-                                solve.statistics["residual"]
-                            ),
+                            **{
+                                f"inner_iterations[{i}]": v
+                                for i, v in enumerate(
+                                    solve.statistics["inner_iterations"]
+                                )
+                            },
+                            **{
+                                f"residual[{i}]": v
+                                for i, v in enumerate(
+                                    solve.statistics["residual"]
+                                )
+                            }
                         },
                         commit=False,
                     )
