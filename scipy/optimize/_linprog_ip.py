@@ -211,23 +211,29 @@ def _assemble_matrix(A, Dinv, options):
             "sketching_duration": sketching_timer.last,
             "decomposition_duration": decomposition_timer.last,
             "product_duration": product_timer.last,
-            "condition_number": np.linalg.cond(dense_M),
-            "condition_number_sketched": np.linalg.cond(dense_matrix),
-            "rank": np.linalg.matrix_rank(dense_M),
-            "rank_sketched": np.linalg.matrix_rank(dense_matrix),
-            "nnz_sketched": sketched_matrix.count_nonzero(),
-            "density_sketched": sketched_matrix.count_nonzero()
-            / (sketched_matrix.shape[0] * sketched_matrix.shape[1]),
-            "nnz_coefficient": A.count_nonzero(),
-            "density_coefficient": A.count_nonzero()
-            / (A.shape[0] * A.shape[1]),
-            "nnz_matrix": sps.coo_matrix(dense_matrix).count_nonzero(),
-            "density_matrix": sps.coo_matrix(dense_matrix).count_nonzero()
-            / (matrix.shape[0] * matrix.shape[1]),
-            "nnz_M": sps.coo_matrix(dense_M).count_nonzero(),
-            "density_M": sps.coo_matrix(dense_M).count_nonzero()
-            / (M.shape[0] * M.shape[1]),
         }
+        if options.linear_solver.log_conditioning_and_rank:
+            statistics.update({
+                "condition_number": np.linalg.cond(dense_M),
+                "condition_number_sketched": np.linalg.cond(dense_matrix),
+                "rank": np.linalg.matrix_rank(dense_M),
+                "rank_sketched": np.linalg.matrix_rank(dense_matrix),
+            })
+        if options.linear_solver.log_sparsity:
+            statistics.update({
+                "nnz_sketched": sketched_matrix.count_nonzero(),
+                "density_sketched": sketched_matrix.count_nonzero()
+                / (sketched_matrix.shape[0] * sketched_matrix.shape[1]),
+                "nnz_coefficient": A.count_nonzero(),
+                "density_coefficient": A.count_nonzero()
+                / (A.shape[0] * A.shape[1]),
+                "nnz_matrix": sps.coo_matrix(dense_matrix).count_nonzero(),
+                "density_matrix": sps.coo_matrix(dense_matrix).count_nonzero()
+                / (matrix.shape[0] * matrix.shape[1]),
+                "nnz_M": sps.coo_matrix(dense_M).count_nonzero(),
+                "density_M": sps.coo_matrix(dense_M).count_nonzero()
+                / (M.shape[0] * M.shape[1]),
+            })
 
         wandb.log(statistics, commit=False)
 

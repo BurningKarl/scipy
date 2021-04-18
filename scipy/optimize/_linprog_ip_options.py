@@ -114,6 +114,8 @@ class LinearSolverOptions:
     solver_rtol: float = 0
     solver_atol: float = 1e-10
     solver_maxiter: int = 1000
+    log_conditioning_and_rank: bool = False
+    log_sparsity: bool = False
 
 
 @dataclass
