@@ -141,6 +141,22 @@ def _assemble_matrix(A, Dinv, options):
             def new_solve(r):
                 with Timer(name="solve", logger=None):
                     x = solve(r)
+
+                if not hasattr(new_solve, "statistics"):
+                    new_solve.statistics = collections.defaultdict(list)
+                new_solve.statistics["residual_M"].append(
+                    np.linalg.norm(M @ x - r) / np.linalg.norm(r)
+                )
+                wandb.log(
+                    {
+                        f"residual_M[{i}]": v
+                        for i, v in enumerate(
+                            new_solve.statistics["residual_M"]
+                        )
+                    },
+                    commit=False,
+                )
+
                 return x
 
             return new_solve
@@ -1053,11 +1069,15 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             message = _get_message(status)
             break
         finally:
-            statistics = {
-                "solve_duration": Timer.timers.total("solve"),
-            }
-            wandb.log(statistics, commit=True)
-            Timer.timers.clear()
+            try:
+                statistics = {
+                    "solve_duration": Timer.timers.total("solve"),
+                }
+                Timer.timers.clear()
+                wandb.log(statistics, commit=False)
+            except KeyError:
+                pass
+            wandb.log({}, commit=True)
 
         # [4] 4.5
         rho_p, rho_d, rho_A, rho_g, rho_mu, obj = _indicators(
