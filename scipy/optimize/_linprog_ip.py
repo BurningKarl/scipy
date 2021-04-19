@@ -400,7 +400,9 @@ def _get_solver(M, options):
                     solve = _get_solver.cholmod_factor
                 else:
                     logger.debug("Using scipy.linalg.cho_factor")
-                    L = sp.linalg.cho_factor(M.toarray())
+                    L = sp.linalg.cho_factor(
+                        M.toarray() if sps.isspmatrix(M) else M
+                    )
 
                     def solve(r):
                         return sp.linalg.cho_solve(L, r)
@@ -980,13 +982,15 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
 
     best_iteration = 0
     best_indicators = {
-        "rho_A": rho_A,
-        "rho_p": rho_p,
-        "rho_d": rho_d,
-        "rho_g": rho_g,
-        "rho_mu": rho_mu,
+        "best_rho_A": rho_A,
+        "best_rho_p": rho_p,
+        "best_rho_d": rho_d,
+        "best_rho_g": rho_g,
+        "best_rho_mu": rho_mu,
     }
-    wandb.summary.update({"best_iteration": best_iteration, **best_indicators})
+    wandb.log(
+        {"best_iteration": best_iteration, **best_indicators}, commit=False
+    )
     if options.ipm.disp:
         _display_iter(rho_p, rho_d, rho_g, "-", rho_mu, obj, header=True)
     if callback is not None:
@@ -1089,23 +1093,24 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
         )
 
         if (
-            min(
-                best_indicators["rho_p"],
-                best_indicators["rho_d"],
-                best_indicators["rho_A"],
+            max(
+                best_indicators["best_rho_p"],
+                best_indicators["best_rho_d"],
+                best_indicators["best_rho_A"],
             )
-            > min(rho_p, rho_d, rho_A)
+            > max(rho_p, rho_d, rho_A)
         ):
             best_iteration = iteration
             best_indicators = {
-                "rho_A": rho_A,
-                "rho_p": rho_p,
-                "rho_d": rho_d,
-                "rho_g": rho_g,
-                "rho_mu": rho_mu,
+                "best_rho_A": rho_A,
+                "best_rho_p": rho_p,
+                "best_rho_d": rho_d,
+                "best_rho_g": rho_g,
+                "best_rho_mu": rho_mu,
             }
-            wandb.summary.update(
-                {"best_iteration": best_iteration, **best_indicators}
+            wandb.log(
+                {"best_iteration": best_iteration, **best_indicators},
+                commit=False,
             )
         if options.ipm.disp:
             _display_iter(rho_p, rho_d, rho_g, alpha, rho_mu, obj)
