@@ -1088,7 +1088,14 @@ def _ip_hsd(A, b, c, c0, callback, postsolve_args, options):
             or rho_A > options.ipm.tol
         )
 
-        if best_indicators["rho_p"] > rho_p:
+        if (
+            min(
+                best_indicators["rho_p"],
+                best_indicators["rho_d"],
+                best_indicators["rho_A"],
+            )
+            > min(rho_p, rho_d, rho_A)
+        ):
             best_iteration = iteration
             best_indicators = {
                 "rho_A": rho_A,
