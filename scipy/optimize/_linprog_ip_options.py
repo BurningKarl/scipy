@@ -12,6 +12,7 @@ from .optimize import OptimizeWarning, _check_unknown_options
 class PreconditioningMethod(enum.Enum):
     NONE = "none"
     SKETCHING = "sketching"
+    FULL_QR = "full_qr"
 
 
 @dataclass

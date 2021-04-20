@@ -162,6 +162,44 @@ def _assemble_matrix(A, Dinv, options):
             return new_solve
 
         return M, preconditioned_solver
+    elif method is PreconditioningMethod.FULL_QR:
+        Dinv_half = np.sqrt(Dinv)
+        M_half = (
+            (sps.diags(Dinv_half, format="csc") @ A.T)
+            if sps.isspmatrix(A)
+            else Dinv_half.reshape(-1, 1) * A.T
+        )
+        R = np.linalg.qr(
+            M_half.toarray() if sps.isspmatrix(M_half) else M_half, mode="r"
+        )
+
+        def preconditioned_solver(solve):
+            def new_solve(r):
+                with Timer(name="solve", logger=None):
+                    r2 = solve_triangular(R, r, trans="T")  # R^{-T} @ r
+                    x = solve_triangular(R, r2, trans="N")  # R^{-1} @ r2
+
+                if not hasattr(new_solve, "statistics"):
+                    new_solve.statistics = collections.defaultdict(list)
+                new_solve.statistics["residual_M"].append(
+                    np.linalg.norm(M @ x - r) / np.linalg.norm(r)
+                )
+                wandb.log(
+                    {
+                        f"residual_M[{i}]": v
+                        for i, v in enumerate(
+                            new_solve.statistics["residual_M"]
+                        )
+                    },
+                    commit=False,
+                )
+
+                return x
+
+            return new_solve
+
+        return np.eye(1), preconditioned_solver
+
     elif method is PreconditioningMethod.SKETCHING:
         Dinv_half = np.sqrt(Dinv)
 
