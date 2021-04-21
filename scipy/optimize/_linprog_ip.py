@@ -534,7 +534,8 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
     #  Assemble M from [4] Equation 8.31 inside _assemble_matrix
     Dinv = x / z
     matrix, preconditioned_solver = _assemble_matrix(A, Dinv, options)
-    solve = preconditioned_solver(_get_solver(matrix, options))
+    with Timer(name="solve", logger=None):
+        solve = preconditioned_solver(_get_solver(matrix, options))
 
     # pc: "predictor-corrector" [4] Section 4.1
     # In development this option could be turned off
@@ -645,7 +646,11 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
                         OptimizeWarning, stacklevel=5)
                 else:
                     raise e
-                solve = _get_solver(matrix, options)
+                matrix, preconditioned_solver = _assemble_matrix(
+                    A, Dinv, options
+                )
+                with Timer(name="solve", logger=None):
+                    solve = preconditioned_solver(_get_solver(matrix, options))
         # [4] Results after 8.29
         d_tau = ((rhatg + 1 / tau * rhattk - (-c.dot(u) + b.dot(v))) /
                  (1 / tau * kappa + (-c.dot(p) + b.dot(q))))
