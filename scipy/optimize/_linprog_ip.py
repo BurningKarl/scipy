@@ -136,6 +136,22 @@ def _assemble_matrix(A, Dinv, options):
             M = A.dot(Dinv.reshape(-1, 1) * A.T)
 
     if method is PreconditioningMethod.NONE:
+        with Timer(logger=None) as product_timer:
+            if options.linear_solver.linear_operators:
+                A_op = sps.linalg.aslinearoperator(A)
+                Dinv_op = sps.linalg.aslinearoperator(
+                    sps.diags(Dinv, 0, format="csc"))
+                M = A_op * Dinv_op * A_op.T
+            else:
+                if options.linear_solver.sparse:
+                    M = A.dot(sps.diags(Dinv, 0, format="csc").dot(A.T))
+                else:
+                    M = A.dot(Dinv.reshape(-1, 1) * A.T)
+
+        statistics = {
+            "product_duration": product_timer.last,
+        }
+        wandb.log(statistics, commit=False)
 
         def preconditioned_solver(solve):
             def new_solve(r):
@@ -164,14 +180,18 @@ def _assemble_matrix(A, Dinv, options):
         return M, preconditioned_solver
     elif method is PreconditioningMethod.FULL_QR:
         Dinv_half = np.sqrt(Dinv)
-        M_half = (
-            (sps.diags(Dinv_half, format="csc") @ A.T)
-            if sps.isspmatrix(A)
-            else Dinv_half.reshape(-1, 1) * A.T
-        )
-        R = np.linalg.qr(
-            M_half.toarray() if sps.isspmatrix(M_half) else M_half, mode="r"
-        )
+
+        with Timer(logger=None) as product_timer:
+            M_half = (
+                (sps.diags(Dinv_half, format="csc") @ A.T)
+                if sps.isspmatrix(A)
+                else Dinv_half.reshape(-1, 1) * A.T
+            )
+
+        with Timer(logger=None) as decomposition_timer:
+            R = np.linalg.qr(
+                M_half.toarray() if sps.isspmatrix(M_half) else M_half, mode="r"
+            )
 
         def preconditioned_solver(solve):
             def new_solve(r):
@@ -197,6 +217,12 @@ def _assemble_matrix(A, Dinv, options):
                 return x
 
             return new_solve
+
+        statistics = {
+            "decomposition_duration": decomposition_timer.last,
+            "product_duration": product_timer.last,
+        }
+        wandb.log(statistics, commit=False)
 
         return np.eye(1), preconditioned_solver
 
@@ -245,7 +271,6 @@ def _assemble_matrix(A, Dinv, options):
                 matrix = (
                     Rinv.T @ (M.toarray() if sps.isspmatrix(M) else M) @ Rinv
                 )
-
 
         statistics = {
             "generate_sketch_duration": generate_sketch_timer.last,
@@ -534,7 +559,14 @@ def _get_delta(A, b, c, x, y, z, tau, kappa, gamma, eta, options):
     #  Assemble M from [4] Equation 8.31 inside _assemble_matrix
     Dinv = x / z
     matrix, preconditioned_solver = _assemble_matrix(A, Dinv, options)
-    with Timer(name="solve", logger=None):
+    if options.preconditioning.preconditioning_method is PreconditioningMethod.NONE:
+        with Timer(logger=None) as decomposition_timer:
+            solve = preconditioned_solver(_get_solver(matrix, options))
+        wandb.log(
+            {"decomposition_duration": decomposition_timer.last},
+            commit=False,
+        )
+    else:
         solve = preconditioned_solver(_get_solver(matrix, options))
 
     # pc: "predictor-corrector" [4] Section 4.1
